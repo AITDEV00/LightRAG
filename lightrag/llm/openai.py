@@ -102,11 +102,15 @@ def create_openai_async_client(
     if client_configs is None:
         client_configs = {}
 
+    import httpx
+    custom_http_client = httpx.AsyncClient(verify=False)
+
     # Create a merged config dict with precedence: explicit params > client_configs > defaults
     merged_configs = {
         **client_configs,
         "default_headers": default_headers,
         "api_key": api_key,
+        "http_client": custom_http_client,
     }
 
     if base_url is not None:
