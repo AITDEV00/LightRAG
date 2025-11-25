@@ -109,7 +109,8 @@ async def generic_rerank_api(
         f"Rerank request: {len(documents)} documents, model: {model}, format: {response_format}"
     )
 
-    async with aiohttp.ClientSession() as session:
+    connector = aiohttp.TCPConnector(ssl=False)
+    async with aiohttp.ClientSession(connector=connector) as session:
         async with session.post(base_url, headers=headers, json=payload) as response:
             if response.status != 200:
                 error_text = await response.text()

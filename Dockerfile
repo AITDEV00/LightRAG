@@ -102,6 +102,26 @@ ENV WORKING_DIR=/app/data/rag_storage
 ENV INPUT_DIR=/app/data/inputs
 
 # Expose API port
-EXPOSE 9621
+# EXPOSE 9621
 
-ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]
+# ENTRYPOINT ["python", "-m", "lightrag.api.lightrag_server"]
+
+
+
+# --- NEW: Copy the Manager Script ---
+# Ensure 'manager_sqlite.py' is in the same directory where you run 'docker build'
+COPY multiuser/ ./multiuser/
+
+# --- NEW: Expose Manager Port ---
+EXPOSE 8000
+
+# --- NEW: Set Entrypoint to Manager ---
+# We use unbuffered mode to see logs immediately
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app/multiuser
+
+ENTRYPOINT ["python", "manager.py"]
+
+# Default arguments (can be overridden at runtime)
+CMD ["--disable-auth", "--auto-create"]

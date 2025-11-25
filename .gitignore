@@ -72,3 +72,8 @@ download_models_hf.py
 
 # Cline files
 memory-bank
+
+# Multiuser files
+/multiuser/*.db
+/multiuser/__pycache__/
+/multiuser/logs
