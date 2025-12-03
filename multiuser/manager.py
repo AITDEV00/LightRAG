@@ -25,6 +25,7 @@ parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind th
 parser.add_argument("--port", type=int, default=8000, help="Port to bind the manager to")
 parser.add_argument("--disable-auth", action="store_true", help="Disable API Key auth (Plug-and-Play mode)")
 parser.add_argument("--auto-create", action="store_true", help="Automatically create workspaces if they don't exist")
+parser.add_argument("--root-path", type=str, default="", help="Root path for FastAPI (useful behind proxies)")
 args = parser.parse_args()
 
 # --- CONFIGURATION ---
@@ -319,6 +320,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     lifespan=lifespan, 
     title="LightRAG Orchestrator",
+    root_path=args.root_path,
     docs_url="/admin/docs",
     redoc_url="/admin/redoc",
     openapi_url="/admin/openapi.json"
@@ -340,9 +342,32 @@ def create_workspace(data: WorkspaceCreate, x_admin_key: str = Header(None, alia
         raise HTTPException(500, str(e))
 
 @app.delete("/admin/workspaces/{workspace}")
-def delete_workspace(workspace: str, wipe_data: bool = False, x_admin_key: str = Header(None, alias="X-Admin-Key")):
+async def delete_workspace(workspace: str, wipe_data: bool = False, x_admin_key: str = Header(None, alias="X-Admin-Key")):
     if x_admin_key != ADMIN_SECRET: raise HTTPException(403, "Invalid Key")
     
+    # Attempt to clear data via API if wipe_data is requested
+    if wipe_data:
+        config = get_workspace_by_name(workspace)
+        if config:
+            try:
+                print(f"🧹 [Delete] Triggering API cleanup for {workspace}...")
+                async with httpx.AsyncClient() as cleanup_client:
+                    headers = {}
+                    if not args.disable_auth and config.api_key:
+                        headers["X-API-Key"] = config.api_key
+                    
+                    # We use a short timeout because we are about to kill it anyway
+                    # But the operation might take time. 
+                    url = f"http://127.0.0.1:{config.port}/documents"
+                    resp = await cleanup_client.delete(url, headers=headers, timeout=10.0)
+                    if resp.status_code == 200:
+                        print(f"✅ [Delete] Documents cleared for {workspace}")
+                    else:
+                         print(f"⚠️ [Delete] Failed to clear documents for {workspace}: {resp.text}")
+
+            except Exception as e:
+                print(f"⚠️ [Delete] Error calling clear_documents for {workspace}: {e}")
+
     manager.stop_process(workspace)
     remove_workspace_from_db(workspace)
     if wipe_data:
@@ -357,6 +382,31 @@ def list_workspaces(x_admin_key: str = Header(None, alias="X-Admin-Key")):
 
 # --- MAIN GATEWAY ---
 
+async def wait_for_health(port: int, timeout: float = 15.0):
+    """
+    Polls the service with an actual HTTP request until it responds.
+    This guarantees the app is fully loaded, not just that the port is bound.
+    """
+    url = f"http://127.0.0.1:{port}/" 
+    start_time = asyncio.get_event_loop().time()
+    
+    # Use a separate temporary client for checks
+    async with httpx.AsyncClient() as health_client:
+        while True:
+            try:
+                # We send a GET request. 
+                # Even if it returns 404, 401, or 405, it means the server IS running.
+                await health_client.get(url, timeout=0.5)
+                return True
+            except (httpx.ConnectError, httpx.ReadTimeout, httpx.ConnectTimeout):
+                # Service not ready yet
+                if asyncio.get_event_loop().time() - start_time > timeout:
+                     raise Exception(f"Timeout waiting for health check on port {port}")
+                await asyncio.sleep(0.2) # Retry quickly
+            except Exception:
+                # Any other error (like a 500 from the app) means it's reachable
+                return True
+
 @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD", "PATCH"])
 async def gateway(path: str, request: Request):
     if path.startswith("admin/"):
@@ -365,6 +415,7 @@ async def gateway(path: str, request: Request):
     target_workspace = None
     target_port = None
     child_api_key = None
+    was_started_just_now = False  # Flag to track if we need to wait
 
     # --- ROUTING LOGIC ---
     if args.disable_auth:
@@ -384,6 +435,7 @@ async def gateway(path: str, request: Request):
                 child_api_key = config.api_key
                 if config.workspace not in manager.processes:
                     manager.start_process(config)
+                    was_started_just_now = True # Mark that we just booted it
             elif args.auto_create:
                 try:
                     print(f"✨ Auto-creating workspace: {workspace_name}")
@@ -391,7 +443,7 @@ async def gateway(path: str, request: Request):
                     target_workspace = config.workspace
                     target_port = config.port
                     child_api_key = config.api_key
-                    await asyncio.sleep(1) 
+                    was_started_just_now = True # Mark that we just created it
                 except ValueError:
                     raise HTTPException(400, "Invalid workspace name")
                 except Exception as e:
@@ -417,9 +469,23 @@ async def gateway(path: str, request: Request):
                 child_api_key = config.api_key
                 if config.workspace not in manager.processes:
                     manager.start_process(config)
+                    was_started_just_now = True
 
     if not target_workspace or not target_port:
         raise HTTPException(401, "Invalid Credentials" if not args.disable_auth else "Workspace not found")
+
+    # ### NEW: Wait Logic ###
+    # If we just started or created the process, we MUST wait for the app to be responsive
+    # before attempting to send the actual request.
+    if was_started_just_now:
+        try:
+            # Wait up to 15 seconds for the child to return an HTTP response
+            print(f"⏳ Waiting for workspace {target_workspace} to become healthy...")
+            await wait_for_health(target_port, timeout=15.0)
+            print(f"✅ Workspace {target_workspace} is ready!")
+        except Exception:
+            print(f"Failed to start workspace {target_workspace} in time.")
+            raise HTTPException(504, f"Timeout: Workspace '{target_workspace}' took too long to start.")
 
     # --- PROXY LOGIC ---
     url = f"http://127.0.0.1:{target_port}/{path}"
@@ -430,14 +496,22 @@ async def gateway(path: str, request: Request):
         if not args.disable_auth and child_api_key:
             headers["X-API-Key"] = child_api_key
 
+        # INJECT ROOT PATH via Header
+        # This tells the downstream FastAPI app that it is being proxied under this path.
+        if args.root_path:
+            headers["X-Forwarded-Prefix"] = args.root_path
+
+
+        request_timeout = 60.0
         rp_req = client.build_request(
             request.method,
             url,
             headers=headers,
             content=await request.body(),
-            params=request.query_params
+            params=request.query_params,
+            timeout=request_timeout
         )
-        
+
         rp_resp = await client.send(rp_req, stream=True)
         
         excluded_headers = {"content-length", "content-encoding", "transfer-encoding", "connection"}
@@ -450,10 +524,15 @@ async def gateway(path: str, request: Request):
             background=BackgroundTask(rp_resp.aclose)
         )
     except httpx.ConnectError:
-        raise HTTPException(502, f"Workspace '{target_workspace}' is starting up...")
+        # If we still get this, the port opened but the app wasn't ready to serve HTTP
+        raise HTTPException(502, f"Workspace '{target_workspace}' connection failed immediately after startup. Please retry after 10 seconds.")
+    except httpx.TimeoutException:
+        print(f"Timeout connecting to {target_workspace}")
+        raise HTTPException(504, f"Gateway Timeout: The request took more than {request_timeout} seconds.")
     except Exception as e:
-        print(f"Gateway Error: {e}")
-        raise HTTPException(500, "Gateway Error")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, f"Gateway Error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

@@ -110,7 +110,8 @@ ENV INPUT_DIR=/app/data/inputs
 
 # --- NEW: Copy the Manager Script ---
 # Ensure 'manager_sqlite.py' is in the same directory where you run 'docker build'
-COPY multiuser/ ./multiuser/
+COPY multiuser/manager.py ./multiuser/manager.py
+# COPY multiuser ./multiuser
 
 # --- NEW: Expose Manager Port ---
 EXPOSE 8000
@@ -124,4 +125,4 @@ WORKDIR /app/multiuser
 ENTRYPOINT ["python", "manager.py"]
 
 # Default arguments (can be overridden at runtime)
-CMD ["--disable-auth", "--auto-create"]
+CMD ["--disable-auth", "--auto-create", "--root-path", "/lightrag"]

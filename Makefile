@@ -11,9 +11,26 @@ IMAGE_TAG := $(NAME):$(DATE)
 
 HARBOR_REPO := zdc-ai-harbor.ecouncil.ae/aiteam
 
-.PHONY: all docker_build
+
+# Variables
+DOCS_DIR := docs_api
+SPEC_FILE := $(DOCS_DIR)/openapi.json
+OUTPUT_HTML := $(DOCS_DIR)/lightrag-api-docs.html
+
+
+.PHONY: all docker_build docs_api docker_upload  harbor_upload
 
 all: docker_build
+
+
+.PHONY: docs
+docs_api:
+	@echo "📂 Creating output directory..."
+	@mkdir -p $(DOCS_DIR)
+	@echo "🔨 Building Redoc documentation..."
+	# npx -y prevents the "Need to install..." prompt
+	npx -y @redocly/cli build-docs $(SPEC_FILE) --output=$(OUTPUT_HTML)
+	@echo "✅ Build complete! View it here: $(OUTPUT_HTML)"
 
 
 docker_build:
