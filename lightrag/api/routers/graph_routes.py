@@ -106,6 +106,24 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error getting graph labels: {str(e)}"
             )
 
+    @router.get("/graph/entity/list", dependencies=[Depends(combined_auth)])
+    async def get_entities(
+        limit: int = Query(1000, description="Max number of entities to return", ge=1),
+        offset: int = Query(0, description="Number of entities to skip", ge=0)
+    ):
+        """
+        Get entities with detailed properties (name, type, description, source_id).
+        Supports pagination.
+        """
+        try:
+            return await rag.get_entities_jyao(limit=limit, offset=offset)
+        except Exception as e:
+            logger.error(f"Error getting entities: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error getting entities: {str(e)}"
+            )
+
     @router.get("/graph/label/popular", dependencies=[Depends(combined_auth)])
     async def get_popular_labels(
         limit: int = Query(

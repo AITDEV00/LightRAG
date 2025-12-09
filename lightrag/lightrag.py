@@ -1013,6 +1013,9 @@ class LightRAG:
         text = await self.chunk_entity_relation_graph.get_all_labels()
         return text
 
+    async def get_entities_jyao(self, limit: int = 1000, offset: int = 0):
+        return await self.chunk_entity_relation_graph.get_nodes_jyao(limit=limit, offset=offset)
+
     async def get_knowledge_graph(
         self,
         node_label: str,

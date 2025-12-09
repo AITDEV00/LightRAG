@@ -663,6 +663,16 @@ class BaseGraphStorage(StorageNameSpace, ABC):
             List of matching labels sorted by relevance
         """
 
+    @abstractmethod
+    async def get_nodes_jyao(self, limit: int = 1000, offset: int = 0) -> list[dict]:
+        """Get nodes with pagination (Custom Implementation).
+
+        Args:
+            limit: Max number of nodes to return
+            offset: Number of nodes to skip
+        """
+
+
 
 class DocStatus(str, Enum):
     """Document processing status"""
