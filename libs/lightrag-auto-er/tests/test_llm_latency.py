@@ -10,7 +10,8 @@ from src.llm_resolution import resolve_variations_batch
 
 async def benchmark():
     # Base Dataset
-    base_clusters = [
+    # Base Dataset
+    base_clusters_raw = [
         ["Apple", "Apple Inc", "Apple Computers"],
         ["Google", "Google LLC", "Alphabet Inc"],
         ["Microsoft", "MSFT", "Microsoft Corp"],
@@ -21,6 +22,12 @@ async def benchmark():
         ["Nvidia", "NVIDIA Corp", "NVDA"],
         ["Oracle", "Oracle Corporation", "ORCL"],
         ["Salesforce", "Salesforce.com", "CRM"]
+    ]
+    
+    # Convert to expected format: List[List[Dict]]
+    base_clusters = [
+        [{"entity_id": name} for name in cluster] 
+        for cluster in base_clusters_raw
     ]
     
     # Scale up to 50 clusters to get a stable measurement

@@ -31,10 +31,7 @@ class AppConfig(BaseSettings):
         default="openai",
         description="Provider for embeddings: 'local' (FastEmbed/SentenceTransformer) or 'openai' (LangChain)."
     )
-    USE_GPU: bool = Field(
-        default=True,
-        description="Whether to use GPU (SentenceTransformer) or CPU (FastEmbed). Only used if provider is 'local'."
-    )
+
     EMBEDDING_API_BASE: str = Field(
         default="https://inference.ai.ecouncil.ae/models/84452b37-2134-4d8b-a192-ebd569b308e9/proxy/v1",
         description="Base URL for the Embedding API (if provider is openai)."

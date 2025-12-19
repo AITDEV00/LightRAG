@@ -4,8 +4,11 @@ This module contains all graph-related routes for the LightRAG API.
 
 from typing import Optional, Dict, Any
 import traceback
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
+
+from libs.service_er_lightrag.src.pipeline import run_pipeline
+from libs.service_er_lightrag.src.config import settings as er_settings
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
@@ -702,5 +705,73 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error merging entities: {str(e)}"
             )
+
+    @router.post("/graph/background/deduplicate", dependencies=[Depends(combined_auth)])
+    async def background_deduplicate(
+        background_tasks: BackgroundTasks,
+    ):
+        """
+        Trigger background entity deduplication using the ML/ER pipeline.
+
+        This endpoint starts an asynchronous process that:
+        1. Runs the Entity Resolution pipeline (features, Splink, LLM, clustering)
+        2. Generates a merge plan
+        3. Executes the merges on the Knowledge Graph
+
+        This process may take some time depending on the graph size.
+        """
+        
+        # Ensure we return the payload so we can execute it
+        er_settings.RETURN_MERGE_STRUCTURE = True
+
+        async def _run_deduplication_task():
+            logger.info("Starting background deduplication task...")
+            try:
+                # 1. Run Pipeline
+                # run_pipeline is synchronous (uses pandas/splink), so run in executor
+                loop = asyncio.get_running_loop()
+                merge_plans = await loop.run_in_executor(None, run_pipeline)
+
+                if not merge_plans:
+                    logger.info("No merges suggested by ER pipeline.")
+                    return
+
+                logger.info(f"ER Pipeline suggested {len(merge_plans)} merge groups. Executing merges...")
+
+                # 2. Execute Merges
+                success_count = 0
+                fail_count = 0
+                
+                for plan in merge_plans:
+                    try:
+                        sources = plan.get("entities_to_change", [])
+                        target = plan.get("entity_to_change_into")
+                        
+                        if not sources or not target:
+                            continue
+                            
+                        logger.info(f"Merging {sources} into '{target}'...")
+                        await rag.amerge_entities(
+                            source_entities=sources,
+                            target_entity=target
+                        )
+                        success_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to merge {sources} into '{target}': {e}")
+                        fail_count += 1
+
+                logger.info(f"Deduplication completed. Success: {success_count}, Failed: {fail_count}")
+
+            except Exception as e:
+                logger.error(f"Error in background deduplication task: {e}")
+                logger.error(traceback.format_exc())
+
+        background_tasks.add_task(_run_deduplication_task)
+        
+        return {
+            "status": "success",
+            "message": "Background deduplication task started",
+            "details": "Check logs for progress. This process may take several minutes."
+        }
 
     return router
