@@ -1,4 +1,5 @@
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+from typing import Union, List, Dict, Any, Optional
 import pandas as pd
 import asyncio
 from .config import settings
@@ -20,11 +21,11 @@ def get_match_reason(gamma_val):
         return "No Match (Else)"
     return f"Level {gamma_val}"
 
-def run_pipeline() -> Optional[List[Dict[str, Any]]]:
+def run_pipeline(input_data: Union[str, Path, List[Dict], pd.DataFrame] = None) -> Optional[List[Dict[str, Any]]]:
     logger.info("Starting ER Pipeline Analysis...")
     
     # 1. Load Data
-    df = load_and_filter_data()
+    df = load_and_filter_data(input_data)
     df["unique_id"] = range(1, len(df) + 1)
     
     # 2. String Features

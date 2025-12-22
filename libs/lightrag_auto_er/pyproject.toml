@@ -1,0 +1,22 @@
+[project]
+name = "lightrag-auto-er"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "jya0", email = "jinxiuyao@gmail.com" }
+]
+requires-python = ">=3.10"
+dependencies = [
+    "splink>=4.0.11",
+    "pandas>=2.0.0,<2.4.0",
+    "pydantic",
+    "pydantic-settings>=2.12.0",
+    "numpy",
+    "tiktoken", 
+    "tenacity"
+]
+
+[build-system]
+requires = ["uv_build>=0.8.20,<0.9.0"]
+build-backend = "uv_build"

@@ -7,8 +7,8 @@ import traceback
 from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
 
-from libs.service_er_lightrag.src.pipeline import run_pipeline
-from libs.service_er_lightrag.src.config import settings as er_settings
+from lightrag_auto_er.pipeline import run_pipeline
+from lightrag_auto_er.config import settings as er_settings
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
@@ -110,7 +110,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
 
     @router.get("/graph/entity/list", dependencies=[Depends(combined_auth)])
-    async def get_entities(
+    async def get_entities_jyao(
         limit: int = Query(1000, description="Max number of entities to return", ge=1),
         offset: int = Query(0, description="Number of entities to skip", ge=0)
     ):
@@ -707,16 +707,17 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             )
 
     @router.post("/graph/background/deduplicate", dependencies=[Depends(combined_auth)])
-    async def background_deduplicate(
+    async def background_deduplicate_jyao(
         background_tasks: BackgroundTasks,
     ):
         """
         Trigger background entity deduplication using the ML/ER pipeline.
 
         This endpoint starts an asynchronous process that:
-        1. Runs the Entity Resolution pipeline (features, Splink, LLM, clustering)
-        2. Generates a merge plan
-        3. Executes the merges on the Knowledge Graph
+        1. Fetches all entities from the knowledge graph
+        2. Runs the Entity Resolution pipeline (features, Splink, LLM, clustering)
+        3. Generates a merge plan
+        4. Executes the merges on the Knowledge Graph
 
         This process may take some time depending on the graph size.
         """
@@ -724,13 +725,48 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
         # Ensure we return the payload so we can execute it
         er_settings.RETURN_MERGE_STRUCTURE = True
 
+        async def _fetch_all_entities(rag_instance):
+            """Helper to fetch all entities from the graph using pagination"""
+            all_entities = []
+            limit = 1000
+            offset = 0
+            
+            while True:
+                # Use the new get_entities_jyao name if that's what's exposed on rag, 
+                # but based on previous code it was rag.get_entities_jyao
+                entities = await rag_instance.get_entities_jyao(limit=limit, offset=offset)
+                if not entities:
+                    break
+                
+                all_entities.extend(entities)
+                
+                if len(entities) < limit:
+                    break
+                    
+                offset += limit
+                
+            return all_entities
+
         async def _run_deduplication_task():
             logger.info("Starting background deduplication task...")
             try:
+                # 0. Fetch Data from Graph
+                logger.info("Fetching entities from graph...")
+                entities_list = await _fetch_all_entities(rag)
+                logger.info(f"Fetched {len(entities_list)} entities from graph.")
+
+                if not entities_list:
+                    logger.info("No entities found to deduplicate.")
+                    return
+
+                # Convert to DataFrame (run_pipeline expects this or similar)
+                import pandas as pd
+                df = pd.DataFrame(entities_list)
+                
                 # 1. Run Pipeline
                 # run_pipeline is synchronous (uses pandas/splink), so run in executor
                 loop = asyncio.get_running_loop()
-                merge_plans = await loop.run_in_executor(None, run_pipeline)
+                merge_plans = await loop.run_in_executor(None, lambda: run_pipeline(input_data=df))
 
                 if not merge_plans:
                     logger.info("No merges suggested by ER pipeline.")

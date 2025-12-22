@@ -7,7 +7,7 @@ from pydantic import Field
 class AppConfig(BaseSettings):
     # Data Paths
     INPUT_FILE_PATH: Path = Field(
-        default=Path("../get-started/input_data_large.json"),
+        default=Path("/home/jyao/ait-projects/GraphRAG/LightRAG/libs/lightrag_auto_er/tests/inputs/all_entities.json"),
         description="Path to the input JSON file."
     )
     OUTPUT_BASE_DIR: Path = Field(
