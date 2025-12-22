@@ -77,6 +77,11 @@ class AppConfig(BaseSettings):
         description="Probability threshold for clustering."
     )
     
+    EXCLUDED_ENTITY_TYPES: list[str] = Field(
+        default=["data", "year", "date", "period", "timeperiod"],
+        description="List of entity types to exclude from processing."
+    )
+    
     # Run Metadata
     TIMESTAMP: str = Field(
         default_factory=lambda: datetime.now().strftime("%Y-%m-%d_%H-%M"),

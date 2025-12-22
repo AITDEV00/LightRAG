@@ -1,1 +1,2 @@
 python manager.py --disable-auth --auto-create --root-path /lightrag
+uv pip install -e libs/lightrag_auto_er

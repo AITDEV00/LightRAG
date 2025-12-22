@@ -754,7 +754,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 # 0. Fetch Data from Graph
                 logger.info("Fetching entities from graph...")
                 entities_list = await _fetch_all_entities(rag)
-                logger.info(f"Fetched {len(entities_list)} entities from graph.")
+                logger.info(f"Entities fetched: {len(entities_list)}")
 
                 if not entities_list:
                     logger.info("No entities found to deduplicate.")
@@ -765,9 +765,9 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 df = pd.DataFrame(entities_list)
                 
                 # 1. Run Pipeline
-                # run_pipeline is synchronous (uses pandas/splink), so run in executor
-                loop = asyncio.get_running_loop()
-                merge_plans = await loop.run_in_executor(None, lambda: run_pipeline(input_data=df))
+                # 1. Run Pipeline
+                # run_pipeline is now async
+                merge_plans = await run_pipeline(input_data=df)
 
                 if not merge_plans:
                     logger.info("No merges suggested by ER pipeline.")
@@ -778,7 +778,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 # 2. Execute Merges
                 success_count = 0
                 fail_count = 0
-                
+
                 for plan in merge_plans:
                     try:
                         sources = plan.get("entities_to_change", [])
@@ -787,7 +787,8 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                         if not sources or not target:
                             continue
                             
-                        logger.info(f"Merging {sources} into '{target}'...")
+                        import json
+                        logger.info(f"Merging {len(sources)} sources into '{target}': {json.dumps(sources)}")
                         await rag.amerge_entities(
                             source_entities=sources,
                             target_entity=target

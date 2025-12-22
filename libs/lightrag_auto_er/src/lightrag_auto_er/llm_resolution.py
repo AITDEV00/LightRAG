@@ -20,6 +20,7 @@ class ResolvedEntity(BaseModel):
 
 from .config import settings
 import httpx
+from .logger import logger
 
 # 2. Setup Logic
 def get_resolution_chain():
@@ -79,7 +80,7 @@ async def resolve_variations_batch(variations_list: List[List[dict]]) -> List[Op
         results = await chain.abatch(formatted_inputs)
         return results
     except Exception as e:
-        print(f"Error in batch resolution: {e}")
+        logger.error(f"Error in batch resolution: {e}")
         # Return Nones on failure
         return [None] * len(variations_list)
 

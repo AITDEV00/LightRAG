@@ -1,11 +1,14 @@
 from pathlib import Path
-from typing import Union, List, Dict
+from typing import Union, List, Dict, TypeAlias
 import pandas as pd
 from .config import settings
 from .logger import logger
 from .timer import timer
 
-def load_and_filter_data(input_data: Union[str, Path, List[Dict], pd.DataFrame] = None) -> pd.DataFrame:
+InputData: TypeAlias = Union[str, Path, List[Dict], pd.DataFrame]
+PipelineData: TypeAlias = pd.DataFrame
+
+def load_and_filter_data(input_data: InputData = None) -> PipelineData:
     timer.start("load_entities")
     
     df = None
@@ -45,9 +48,9 @@ def load_and_filter_data(input_data: Union[str, Path, List[Dict], pd.DataFrame] 
 
     # FILTER STEP: Discard 'data' types immediately
     initial_count = len(df)
-    df = df[~df['entity_type'].isin(['data', 'year', 'date', 'period', 'timeperiod'])].copy()
+    df = df[~df['entity_type'].isin(settings.EXCLUDED_ENTITY_TYPES)].copy()
     filtered_count = len(df)
-    logger.info(f"Filtered out {initial_count - filtered_count} records with entity_type='data', 'year', 'date', 'period', 'timeperiod'")
+    logger.info(f"Filtered out {initial_count - filtered_count} records with entity_type={settings.EXCLUDED_ENTITY_TYPES}")
 
     df = df.reset_index(drop=True)
     df["unique_id"] = df.index.astype("int64")
