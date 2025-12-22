@@ -1563,7 +1563,7 @@ class Neo4JStorage(BaseGraphStorage):
         ) as session:
             # query = f"MATCH (n:`{workspace_label}`) RETURN n ORDER BY n.entity_id SKIP $offset LIMIT $limit"
             query = f"""
-            MATCH (n:`${workspace_label}`)
+            MATCH (n:`{workspace_label}`)
             WHERE n.entity_id IS NOT NULL
             WITH n, n.entity_id AS label
             ORDER BY label

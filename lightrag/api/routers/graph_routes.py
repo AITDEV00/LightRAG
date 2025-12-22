@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from lightrag_auto_er.pipeline import run_pipeline
 from lightrag_auto_er.config import settings as er_settings
+import asyncio
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
