@@ -1,5 +1,7 @@
 python manager.py --disable-auth --auto-create --root-path /lightrag
 
+uv sync --frozen --no-dev --extra api --extra offline --no-editable
+
 uv pip install -e libs/lightrag_auto_er
 
 pkill -9 -f "python manager.py --disable-auth --auto-create --root-path /lightrag"

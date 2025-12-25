@@ -8,6 +8,12 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 
+[manifest]
+members = [
+    "lightrag-auto-er",
+    "lightrag-hku",
+]
+
 [[package]]
 name = "aioboto3"
 version = "15.4.0"
@@ -1987,6 +1993,32 @@ wheels = [
 ]
 
 [[package]]
+name = "lightrag-auto-er"
+version = "0.1.0"
+source = { editable = "libs/lightrag_auto_er" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "splink" },
+    { name = "tenacity" },
+    { name = "tiktoken" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy" },
+    { name = "pandas", specifier = ">=2.0.0,<2.4.0" },
+    { name = "pydantic" },
+    { name = "pydantic-settings", specifier = ">=2.12.0" },
+    { name = "splink", specifier = ">=4.0.11" },
+    { name = "tenacity" },
+    { name = "tiktoken" },
+]
+
+[[package]]
 name = "lightrag-hku"
 source = { editable = "." }
 dependencies = [
@@ -2008,7 +2040,6 @@ dependencies = [
     { name = "pypinyin" },
     { name = "python-dotenv" },
     { name = "setuptools" },
-    { name = "splink" },
     { name = "tabulate" },
     { name = "tenacity" },
     { name = "tiktoken" },
@@ -2181,7 +2212,6 @@ requires-dist = [
     { name = "redis", marker = "extra == 'offline-storage'", specifier = ">=5.0.0,<8.0.0" },
     { name = "setuptools" },
     { name = "setuptools", marker = "extra == 'api'" },
-    { name = "splink", specifier = ">=4.0.11" },
     { name = "tabulate", specifier = ">=0.9.0" },
     { name = "tenacity" },
     { name = "tenacity", marker = "extra == 'api'" },

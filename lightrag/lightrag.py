@@ -1210,6 +1210,71 @@ class LightRAG:
             if update_storage:
                 await self._insert_done()
 
+    async def agenerate_doc_summary(self, content: str) -> str:
+        """Generate document summary using LLM with fallback to truncation"""
+        # Get pipeline status for logging
+        pipeline_status = await get_namespace_data("pipeline_status")
+        pipeline_status_lock = get_pipeline_status_lock()
+
+        # Calculate available context
+        try:
+            max_tokens = getattr(self, "max_token_size", 32768)
+        except Exception:
+            max_tokens = 32768
+            
+        try:
+            logger.info(f"Generating summary for document (len={len(content)})...")
+            async with pipeline_status_lock:
+                 pipeline_status["latest_message"] = "Generating document summary with LLM..."
+                 # Only append if not recently added to avoid spam
+                 if not pipeline_status["history_messages"] or "Generating document summary" not in pipeline_status["history_messages"][-1]:
+                     pipeline_status["history_messages"].append("Generating document summary with LLM...")
+
+            # Simple prompt for summarization
+            prompt = (
+                "Please generate a summary for the following document.\n"
+                "The summary should be concise but comprehensive, capturing the main topics and key entities.\n\n"
+                "Document Content:\n{content}\n\n"
+                "Summary:"
+            )
+            
+            output_tokens = int(max_tokens / 2)
+            
+            # Truncate content if needed to fit context (input + output = max)
+            # Reserve some buffer for prompt structure (approx 500 chars)
+            input_limit_chars = (max_tokens - output_tokens) * 3
+            
+            truncated_content = content
+            if len(content) > input_limit_chars:
+                 truncated_content = content[:input_limit_chars] + "..."
+            
+            formatted_prompt = prompt.format(content=truncated_content)
+            
+            summary = await self.llm_model_func(
+                formatted_prompt, 
+                max_tokens=output_tokens
+            )
+            
+            if summary and summary.strip():
+                async with pipeline_status_lock:
+                     # Only update latest message, don't spam history for success
+                     pipeline_status["latest_message"] = "Document summary generated successfully"
+                return summary.strip()
+            
+            async with pipeline_status_lock:
+                 msg = "LLM returned empty summary, using fallback"
+                 pipeline_status["latest_message"] = msg
+                 pipeline_status["history_messages"].append(msg)
+            return get_content_summary(content)
+            
+        except Exception as e:
+            logger.error(f"Failed to generate summary: {e}. Falling back to truncation.")
+            async with pipeline_status_lock:
+                 msg = f"Summary generation failed: {str(e)}. Using fallback."
+                 pipeline_status["latest_message"] = msg
+                 pipeline_status["history_messages"].append(msg)
+            return get_content_summary(content)
+
     async def apipeline_enqueue_documents(
         self,
         input: str | list[str],
@@ -1295,11 +1360,31 @@ class LightRAG:
                 for content, path in unique_content_with_paths.items()
             }
 
-        # 2. Generate document initial status (without content)
+        # 2. Generate content summaries (concurrently)
+        # Using dict to preserve mapping between optional ID changes
+        # Ensure we have a list of contents in the same order we iterate later
+        contents_list = list(contents.items()) # [(id, {content:..., ...}), ...]
+        
+        # Create tasks for all summaries
+        summary_tasks = [
+            self.agenerate_doc_summary(data["content"]) 
+            for _, data in contents_list
+        ]
+        
+        # Await all summaries
+        summaries = await asyncio.gather(*summary_tasks)
+        
+        # Map IDs to summaries
+        id_to_summary = {
+            contents_list[i][0]: summaries[i] 
+            for i in range(len(contents_list))
+        }
+
+        # 3. Generate document initial status
         new_docs: dict[str, Any] = {
             id_: {
                 "status": DocStatus.PENDING,
-                "content_summary": get_content_summary(content_data["content"]),
+                "content_summary": id_to_summary[id_],
                 "content_length": len(content_data["content"]),
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1311,7 +1396,7 @@ class LightRAG:
             for id_, content_data in contents.items()
         }
 
-        # 3. Filter out already processed documents
+        # 4. Filter out already processed documents
         # Get docs ids
         all_new_doc_ids = set(new_docs.keys())
         # Exclude IDs of documents that are already enqueued
