@@ -77,8 +77,28 @@ async def resolve_variations_batch(variations_list: List[List[dict]]) -> List[Op
         formatted_inputs.append({"variations": text_repr})
     
     try:
-        results = await chain.abatch(formatted_inputs)
-        return results
+        # Use semaphore to limit concurrency manually since abatch config might be flaky
+        semaphore = asyncio.Semaphore(5)
+        
+        async def _resolve_single(input_data):
+            async with semaphore:
+                # We use ainvoke for single item
+                return await chain.ainvoke(input_data)
+
+        # Create tasks
+        tasks = [_resolve_single(inp) for inp in formatted_inputs]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Handle exceptions in results
+        final_results = []
+        for r in results:
+            if isinstance(r, Exception):
+                logger.error(f"Single resolution failed: {r}")
+                final_results.append(None)
+            else:
+                final_results.append(r)
+                
+        return final_results
     except Exception as e:
         logger.error(f"Error in batch resolution: {e}")
         # Return Nones on failure

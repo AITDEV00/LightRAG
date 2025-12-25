@@ -28,31 +28,42 @@ class EntityResolutionPipeline:
 
     async def load_data(self, input_data: InputData = None) -> PipelineData:
         """Step 1: Load and filter data."""
-        # For now, we run blocking IO in sync, could be moved to executor
-        df = load_and_filter_data(input_data)
+        # Run blocking IO in thread pool
+        df = await asyncio.to_thread(load_and_filter_data, input_data)
         df["unique_id"] = range(1, len(df) + 1)
         return df
 
     async def feature_engineering(self, df: PipelineData) -> PipelineData:
         """Step 2: String Features"""
         timer.start("string_features")
-        # CPU bound - could be moved to executor
-        # Generate acronyms
-        df["col_acronym"] = df["entity_id"].astype(str).apply(generate_hybrid_acronym)
-        # Normalise entity_id
-        df["col_norm"] = df["entity_id"].astype(str).apply(normalise_text_preserved)
+        
+        def _compute_features(d):
+            # Generate acronyms
+            d["col_acronym"] = d["entity_id"].astype(str).apply(generate_hybrid_acronym)
+            # Normalise entity_id
+            d["col_norm"] = d["entity_id"].astype(str).apply(normalise_text_preserved)
+            return d
+
+        # CPU bound - run in thread
+        df = await asyncio.to_thread(_compute_features, df)
+        
         elapsed = timer.stop("string_features")
         logger.info("String feature engineering took %.3f seconds", elapsed)
         return df
 
     async def generate_embeddings(self, df: PipelineData) -> PipelineData:
         """Step 3: Embeddings"""
-        return add_description_embeddings(df)
+        # OpenAI/LangChain embedding call is synchronous and blocking
+        return await asyncio.to_thread(add_description_embeddings, df)
 
     async def train_model(self, df: PipelineData):
         """Step 4: Splink Setup & Training"""
-        linker = create_linker(df)
-        train_linker(linker)
+        def _train(d):
+            l = create_linker(d)
+            train_linker(l)
+            return l
+            
+        linker = await asyncio.to_thread(_train, df)
         return linker
 
     async def inference(self, linker) -> Any:
@@ -169,7 +180,7 @@ class EntityResolutionPipeline:
         
         return merge_df
 
-    def export_results(self, merge_df: PipelineData, preds: PipelineData):
+    def export_results(self, merge_df: PipelineData, preds: PipelineData, output_dir: Path):
         """Export results and timings."""
         print("\\nSuggested merges (markdown):")
         if not merge_df.empty:
@@ -178,8 +189,14 @@ class EntityResolutionPipeline:
             self.output_lines.append("\\n## Suggested merges\\n")
             self.output_lines.append(merge_md)
             
-            # CSV Export: Merges
-            merges_csv_path = settings.run_dir / f"merges_{settings.TIMESTAMP}.csv"
+        # CSV Export: Merges
+        merges_csv_path = output_dir / f"merges_{settings.TIMESTAMP}.csv"
+        if not merge_df.empty:
+            merge_md = merge_df.to_markdown(index=False)
+            # print(merge_md)
+            # self.output_lines.append("\\n## Suggested merges\\n")
+            # self.output_lines.append(merge_md)
+            
             merge_df.to_csv(merges_csv_path, index=False)
             logger.info(f"Detailed merges exported to {merges_csv_path}")
         else:
@@ -191,7 +208,7 @@ class EntityResolutionPipeline:
             # Re-filter to ensure we get everything > 0.5
             all_high_prob = preds[preds["match_probability"] > 0.5].sort_values("match_weight", ascending=True)
             if not all_high_prob.empty:
-                preds_csv_path = settings.run_dir / f"predictions_{settings.TIMESTAMP}.csv"
+                preds_csv_path = output_dir / f"predictions_{settings.TIMESTAMP}.csv"
                 all_high_prob.to_csv(preds_csv_path, index=False)
                 logger.info(f"High probability predictions exported to {preds_csv_path}")
 
@@ -201,23 +218,30 @@ class EntityResolutionPipeline:
         for name, sec in timer.get_all().items():
             self.output_lines.append(f"- **{name}**: {sec:.3f}")
 
-        with open(settings.output_md_path, "w", encoding="utf-8") as f:
+        output_md_path = output_dir / f"output_{settings.TIMESTAMP}.md"
+        with open(output_md_path, "w", encoding="utf-8") as f:
             f.write("# Splink entity resolution debug output\\n\\n")
             f.write("\\n".join(self.output_lines))
             
         # Write timings file
-        with open(settings.timing_path, "w", encoding="utf-8") as tf:
+        timing_path = output_dir / f"timings_{settings.TIMESTAMP}.txt"
+        with open(timing_path, "w", encoding="utf-8") as tf:
             tf.write("Timing summary (seconds)\\n")
             for name, sec in timer.get_all().items():
                 tf.write(f"{name}: {sec:.6f}\\n")
 
-        logger.info(f"All markdown output written to {settings.output_md_path}")
-        logger.info(f"Timings written to {settings.timing_path}")
+        logger.info(f"All markdown output written to {output_md_path}")
+        logger.info(f"Timings written to {timing_path}")
 
-    async def run(self, input_data: InputData = None) -> Optional[List[Dict[str, Any]]]:
+    async def run(self, input_data: InputData = None, output_dir: Path = None) -> Optional[List[Dict[str, Any]]]:
         """Execute the full pipeline."""
         # Ensure output directory exists (crucial for server/library usage where setup_logging isn't called)
-        settings.run_dir.mkdir(parents=True, exist_ok=True)
+        if output_dir:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            # Fallback to default behavior if not specified
+            output_dir = settings.run_dir
+            output_dir.mkdir(parents=True, exist_ok=True)
 
         logger.info("Starting ER Pipeline Analysis...")
         self.output_lines = [] # Reset output buffer
@@ -248,7 +272,7 @@ class EntityResolutionPipeline:
             merge_df = await self.merge_planning(df_clusters, preds)
 
             # 8. Export & Save
-            self.export_results(merge_df, preds)
+            self.export_results(merge_df, preds, output_dir)
 
             # 9. Return Payload
             if settings.RETURN_MERGE_STRUCTURE:
@@ -259,7 +283,7 @@ class EntityResolutionPipeline:
             logger.exception("Pipeline run failed")
             raise
 
-async def run_pipeline(input_data: InputData = None) -> Optional[List[Dict[str, Any]]]:
+async def run_pipeline(input_data: InputData = None, output_dir: Path = None) -> Optional[List[Dict[str, Any]]]:
     """Wrapper for backward compatibility."""
     pipeline = EntityResolutionPipeline()
-    return await pipeline.run(input_data)
+    return await pipeline.run(input_data, output_dir=output_dir)

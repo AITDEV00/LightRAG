@@ -13,6 +13,16 @@ import asyncio
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
+from lightrag.kg.shared_storage import get_namespace_data, get_pipeline_status_lock
+from lightrag.base import BaseKVStorage
+import json
+import os
+from datetime import datetime
+import shutil
+import zipfile
+from fastapi.responses import FileResponse
+
+# ERJobManager moved to er_routes.py
 
 router = APIRouter(tags=["graph"])
 
@@ -92,6 +102,8 @@ class RelationCreateRequest(BaseModel):
 
 def create_graph_routes(rag, api_key: Optional[str] = None):
     combined_auth = get_combined_auth_dependency(api_key)
+
+    # ER cleanup moved to er_routes module
 
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
     async def get_graph_labels():
@@ -707,109 +719,6 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
                 status_code=500, detail=f"Error merging entities: {str(e)}"
             )
 
-    @router.post("/graph/background/deduplicate", dependencies=[Depends(combined_auth)])
-    async def background_deduplicate_jyao(
-        background_tasks: BackgroundTasks,
-    ):
-        """
-        Trigger background entity deduplication using the ML/ER pipeline.
-
-        This endpoint starts an asynchronous process that:
-        1. Fetches all entities from the knowledge graph
-        2. Runs the Entity Resolution pipeline (features, Splink, LLM, clustering)
-        3. Generates a merge plan
-        4. Executes the merges on the Knowledge Graph
-
-        This process may take some time depending on the graph size.
-        """
-        
-        # Ensure we return the payload so we can execute it
-        er_settings.RETURN_MERGE_STRUCTURE = True
-
-        async def _fetch_all_entities(rag_instance):
-            """Helper to fetch all entities from the graph using pagination"""
-            all_entities = []
-            limit = 1000
-            offset = 0
-            
-            while True:
-                # Use the new get_entities_jyao name if that's what's exposed on rag, 
-                # but based on previous code it was rag.get_entities_jyao
-                entities = await rag_instance.get_entities_jyao(limit=limit, offset=offset)
-                if not entities:
-                    break
-                
-                all_entities.extend(entities)
-                
-                if len(entities) < limit:
-                    break
-                    
-                offset += limit
-                
-            return all_entities
-
-        async def _run_deduplication_task():
-            logger.info("Starting background deduplication task...")
-            try:
-                # 0. Fetch Data from Graph
-                logger.info("Fetching entities from graph...")
-                entities_list = await _fetch_all_entities(rag)
-                logger.info(f"Entities fetched: {len(entities_list)}")
-
-                if not entities_list:
-                    logger.info("No entities found to deduplicate.")
-                    return
-
-                # Convert to DataFrame (run_pipeline expects this or similar)
-                import pandas as pd
-                df = pd.DataFrame(entities_list)
-                
-                # 1. Run Pipeline
-                # 1. Run Pipeline
-                # run_pipeline is now async
-                merge_plans = await run_pipeline(input_data=df)
-
-                if not merge_plans:
-                    logger.info("No merges suggested by ER pipeline.")
-                    return
-
-                logger.info(f"ER Pipeline suggested {len(merge_plans)} merge groups. Executing merges...")
-
-                # 2. Execute Merges
-                success_count = 0
-                fail_count = 0
-
-                for plan in merge_plans:
-                    try:
-                        sources = plan.get("entities_to_change", [])
-                        target = plan.get("entity_to_change_into")
-                        
-                        if not sources or not target:
-                            continue
-                            
-                        import json
-                        logger.info(f"Merging {len(sources)} sources into '{target}': {json.dumps(sources)}")
-                        await rag.amerge_entities(
-                            source_entities=sources,
-                            target_entity=target
-                        )
-                        success_count += 1
-                    except Exception as e:
-                        logger.error(f"Failed to merge {sources} into '{target}': {e}")
-                        fail_count += 1
-
-                logger.info(f"Deduplication completed. Success: {success_count}, Failed: {fail_count}")
-
-            except Exception as e:
-                logger.error(f"Error in background deduplication task: {e}")
-                logger.error(traceback.format_exc())
-
-        background_tasks.add_task(_run_deduplication_task)
-        
-        return {
-            "status": "success",
-            "message": "Background deduplication task started",
-            "details": "Check logs for progress. This process may take several minutes."
-        }
+        return {"status": "success", "job_id": job_id, "message": "Analysis started"}
 
     return router
