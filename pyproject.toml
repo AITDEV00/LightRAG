@@ -27,6 +27,7 @@ dependencies = [
     "google-genai>=1.0.0,<2.0.0",
     "json_repair",
     "langchain-openai>=1.0.3",
+    "lightrag_auto_er",
     "nano-vectordb",
     "networkx",
     "numpy",
@@ -164,3 +165,7 @@ target-version = "py310"
 members = [
     "libs/lightrag_auto_er",
 ]
+
+[tool.uv.sources]
+# CHANGE THIS LINE: Use 'workspace = true' instead of 'path = ...'
+lightrag-auto-er = { workspace = true }

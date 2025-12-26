@@ -42,12 +42,16 @@ COPY pyproject.toml .
 COPY setup.py .
 COPY uv.lock .
 
+COPY libs ./libs/
+
 # Install base, API, and offline extras without the project to improve caching
 RUN --mount=type=cache,target=/root/.local/share/uv \
     uv sync --frozen --no-dev --extra api --extra offline --no-install-project --no-editable
 
 # Copy project sources after dependency layer
 COPY lightrag/ ./lightrag/
+
+
 
 # Include pre-built frontend assets from the previous stage
 COPY --from=frontend-builder /app/lightrag/api/webui ./lightrag/api/webui
@@ -77,6 +81,7 @@ ENV UV_SYSTEM_PYTHON=1
 COPY --from=builder /root/.local /root/.local
 COPY --from=builder /app/.venv /app/.venv
 COPY --from=builder /app/lightrag ./lightrag
+COPY --from=builder /app/libs ./libs/
 COPY pyproject.toml .
 COPY setup.py .
 COPY uv.lock .
