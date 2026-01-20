@@ -1,5 +1,6 @@
 from __future__ import annotations
 from functools import partial
+import re
 from pathlib import Path
 
 import asyncio
@@ -3108,6 +3109,24 @@ async def kg_query(
     )
 
     # Handle cache
+    context_data = (
+        context_result.raw_data.get("data", {}) if context_result.raw_data else {}
+    )
+    chunk_ids = [
+        chunk.get("chunk_id")
+        for chunk in context_data.get("chunks", [])
+        if chunk.get("chunk_id")
+    ]
+    if chunk_ids:
+        context_signature = "|".join(chunk_ids)
+    else:
+        ref_paths = [
+            ref.get("file_path")
+            for ref in context_data.get("references", [])
+            if ref.get("file_path")
+        ]
+        context_signature = "|".join(ref_paths)
+
     args_hash = compute_args_hash(
         query_param.mode,
         query,
@@ -3121,6 +3140,7 @@ async def kg_query(
         ll_keywords_str,
         query_param.user_prompt or "",
         query_param.enable_rerank,
+        context_signature,
     )
 
     cached_result = await handle_cache(
@@ -3829,7 +3849,162 @@ async def _merge_all_chunks(
         f"Round-robin merged chunks: {origin_len} -> {len(merged_chunks)} (deduplicated {origin_len - len(merged_chunks)})"
     )
 
+    if not merged_chunks and text_chunks_db and (filtered_entities or filtered_relations):
+        max_related_chunks = text_chunks_db.global_config.get(
+            "related_chunk_number", DEFAULT_RELATED_CHUNK_NUMBER
+        )
+        fallback_limit = query_param.chunk_top_k or max_related_chunks or 1
+        fallback_chunk_ids = _collect_source_chunk_ids(
+            filtered_entities, filtered_relations, fallback_limit
+        )
+        if fallback_chunk_ids:
+            fallback_data = await text_chunks_db.get_by_ids(fallback_chunk_ids)
+            for i, (chunk_id, chunk_data) in enumerate(
+                zip(fallback_chunk_ids, fallback_data)
+            ):
+                if chunk_data is not None and "content" in chunk_data:
+                    merged_chunks.append(
+                        {
+                            "content": chunk_data["content"],
+                            "file_path": chunk_data.get("file_path", "unknown_source"),
+                            "chunk_id": chunk_id,
+                        }
+                    )
+                    if chunk_tracking is not None:
+                        chunk_tracking[chunk_id] = {
+                            "source": "F",
+                            "frequency": 1,
+                            "order": i + 1,
+                        }
+
     return merged_chunks
+
+
+def _collect_source_chunk_ids(
+    filtered_entities: list[dict], filtered_relations: list[dict], limit: int
+) -> list[str]:
+    unique_ids = []
+    seen = set()
+    for entity in filtered_entities:
+        source_id = entity.get("source_id", "")
+        for chunk_id in split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP]):
+            if chunk_id and chunk_id not in seen:
+                seen.add(chunk_id)
+                unique_ids.append(chunk_id)
+                if limit and len(unique_ids) >= limit:
+                    return unique_ids
+
+    for relation in filtered_relations:
+        source_id = relation.get("source_id", "")
+        for chunk_id in split_string_by_multi_markers(source_id, [GRAPH_FIELD_SEP]):
+            if chunk_id and chunk_id not in seen:
+                seen.add(chunk_id)
+                unique_ids.append(chunk_id)
+                if limit and len(unique_ids) >= limit:
+                    return unique_ids
+
+    return unique_ids
+
+
+def _merge_reference_list_with_context_paths(
+    reference_list: list[dict],
+    entities_context: list[dict],
+    relations_context: list[dict],
+) -> list[dict]:
+    existing_paths = {ref.get("file_path") for ref in reference_list if ref.get("file_path")}
+    unique_paths = []
+    for item in entities_context + relations_context:
+        file_path = item.get("file_path", "")
+        for path in split_string_by_multi_markers(file_path, [GRAPH_FIELD_SEP]):
+            if path and path != "unknown_source" and path not in existing_paths:
+                existing_paths.add(path)
+                unique_paths.append(path)
+
+    if not unique_paths:
+        return reference_list
+
+    next_id = len(reference_list) + 1
+    for path in unique_paths:
+        reference_list.append({"reference_id": str(next_id), "file_path": path})
+        next_id += 1
+    return reference_list
+
+
+def _extract_doc_targets_from_query(query: str) -> list[str]:
+    if not query:
+        return []
+    matches = re.findall(r"\b[A-Za-z0-9_-]+-\d{4}-\d{4}(?:\.\w+)?\b", query)
+    if not matches:
+        return []
+    normalized = []
+    for match in matches:
+        normalized.append(match.lower())
+        if "." not in match:
+            normalized.append(f"{match.lower()}.md")
+    return list(dict.fromkeys(normalized))
+
+
+def _matches_target_paths(file_path: str, target_paths: list[str]) -> bool:
+    if not file_path or not target_paths:
+        return False
+    for path in split_string_by_multi_markers(file_path, [GRAPH_FIELD_SEP]):
+        if path and path.lower() in target_paths:
+            return True
+    return False
+
+
+def _filter_context_items_by_target_paths(
+    items: list[dict], target_paths: list[str]
+) -> list[dict]:
+    if not target_paths:
+        return items
+    filtered_items = []
+    for item in items:
+        file_path = item.get("file_path", "")
+        paths = split_string_by_multi_markers(file_path, [GRAPH_FIELD_SEP])
+        if not paths:
+            continue
+        matched = [p for p in paths if p and p.lower() in target_paths]
+        if not matched:
+            continue
+        desc = item.get("description", "")
+        if desc and GRAPH_FIELD_SEP in desc:
+            desc_parts = split_string_by_multi_markers(desc, [GRAPH_FIELD_SEP])
+            if len(desc_parts) == len(paths):
+                kept_paths = []
+                kept_desc = []
+                for path, part in zip(paths, desc_parts):
+                    if path and path.lower() in target_paths:
+                        kept_paths.append(path)
+                        kept_desc.append(part)
+                if kept_paths:
+                    item = item.copy()
+                    item["file_path"] = GRAPH_FIELD_SEP.join(kept_paths)
+                    item["description"] = GRAPH_FIELD_SEP.join(kept_desc)
+        filtered_items.append(item)
+    return filtered_items
+
+
+def _extract_target_paths_from_query_and_entities(
+    query: str, entities_context: list[dict]
+) -> list[str]:
+    target_paths = _extract_doc_targets_from_query(query)
+    if target_paths:
+        return target_paths
+    if not query:
+        return []
+    query_lower = query.lower()
+    entity_paths: list[str] = []
+    for entity in entities_context:
+        entity_name = str(entity.get("entity") or entity.get("entity_name") or "").strip()
+        if len(entity_name) < 4:
+            continue
+        if entity_name.lower() in query_lower:
+            file_path = entity.get("file_path", "")
+            for path in split_string_by_multi_markers(file_path, [GRAPH_FIELD_SEP]):
+                if path and path != "unknown_source":
+                    entity_paths.append(path.lower())
+    return list(dict.fromkeys(entity_paths))
 
 
 async def _build_context_str(
@@ -3842,11 +4017,14 @@ async def _build_context_str(
     chunk_tracking: dict = None,
     entity_id_to_original: dict = None,
     relation_id_to_original: dict = None,
+    target_paths: list[str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """
     Build the final LLM context string with token processing.
     This includes dynamic token calculation and final chunk truncation.
     """
+    original_entities_context = entities_context
+    original_relations_context = relations_context
     tokenizer = global_config.get("tokenizer")
     if not tokenizer:
         logger.error("Missing tokenizer, cannot build LLM context")
@@ -3927,9 +4105,16 @@ async def _build_context_str(
         chunk_token_limit=available_chunk_tokens,  # Pass dynamic limit
     )
 
+    if not truncated_chunks and merged_chunks:
+        fallback_limit = query_param.chunk_top_k or len(merged_chunks)
+        truncated_chunks = merged_chunks[: min(fallback_limit, len(merged_chunks))]
+
     # Generate reference list from truncated chunks using the new common function
     reference_list, truncated_chunks = generate_reference_list_from_chunks(
         truncated_chunks
+    )
+    reference_list = _merge_reference_list_with_context_paths(
+        reference_list, original_entities_context, original_relations_context
     )
 
     # Rebuild chunks_context with truncated chunks
@@ -4087,6 +4272,9 @@ async def _build_query_context(
 
     # Stage 4: Build final LLM context with dynamic token processing
     # _build_context_str now always returns tuple[str, dict]
+    target_paths = _extract_target_paths_from_query_and_entities(
+        query, search_result.get("final_entities", [])
+    )
     context, raw_data = await _build_context_str(
         entities_context=truncation_result["entities_context"],
         relations_context=truncation_result["relations_context"],
@@ -4097,6 +4285,7 @@ async def _build_query_context(
         chunk_tracking=search_result["chunk_tracking"],
         entity_id_to_original=truncation_result["entity_id_to_original"],
         relation_id_to_original=truncation_result["relation_id_to_original"],
+        target_paths=target_paths if target_paths else None,
     )
 
     # Convert keywords strings to lists and add complete metadata to raw_data

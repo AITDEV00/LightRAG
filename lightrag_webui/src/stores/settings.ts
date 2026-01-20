@@ -317,7 +317,7 @@ const useSettingsStoreBase = create<SettingsState>()(
           // Add new querySettings
           state.querySettings = {
             ...state.querySettings,
-            mode: 'mix',
+            mode: 'auto',
             response_type: 'Multiple Paragraphs',
             top_k: 40,
             chunk_top_k: 10,

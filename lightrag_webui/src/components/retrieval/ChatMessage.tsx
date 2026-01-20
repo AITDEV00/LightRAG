@@ -1,7 +1,8 @@
-import { ReactNode, useEffect, useMemo, useRef, memo, useState } from 'react' // Import useMemo
-import { Message } from '@/api/lightrag'
+import { ReactNode, useEffect, useMemo, useRef, memo, useState, useCallback, isValidElement, cloneElement } from 'react' // Import useCallback
+import { Message, Reference } from '@/api/lightrag'
 import useTheme from '@/hooks/useTheme'
 import { cn } from '@/lib/utils'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/Tooltip'
 
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -42,6 +43,10 @@ export type MessageWithError = Message & {
    * Used to prevent red error text during streaming of incomplete LaTeX formulas.
    */
   latexRendered?: boolean
+  /**
+   * References from the query response with file paths and optional chunk content
+   */
+  references?: Reference[]
 }
 
 // Restore original component definition and export
@@ -92,6 +97,100 @@ export const ChatMessage = ({
     loadKaTeX();
   }, []);
 
+  // Helper function to render reference with hover tooltip
+  const ReferenceLink = ({ refId, references }: { refId: string; references?: Reference[] }) => {
+    if (!references || references.length === 0) {
+      return <sup className="text-blue-600 dark:text-blue-400 font-bold">[{refId}]</sup>
+    }
+
+    const reference = references.find(r => r.reference_id === refId)
+    if (!reference) {
+      return <sup className="text-blue-600 dark:text-blue-400 font-bold">[{refId}]</sup>
+    }
+
+    const chunkContent = reference.content?.join('\n\n') || ''
+    const previewLength = 300
+    const preview = chunkContent
+      ? (chunkContent.length > previewLength
+        ? chunkContent.substring(0, previewLength) + '...'
+        : chunkContent)
+      : 'No preview available'
+
+    return (
+      <TooltipProvider delayDuration={200}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <sup className="text-blue-600 dark:text-blue-400 font-bold cursor-help hover:underline hover:text-blue-800 dark:hover:text-blue-300">
+              [{refId}]
+            </sup>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-md">
+            <div className="space-y-2">
+              <div className="font-semibold text-xs">{reference.file_path}</div>
+              <div className="text-xs whitespace-pre-wrap">{preview}</div>
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    )
+  }
+
+  // Function to process text and replace [n] with ReferenceLink components
+  const processTextWithReferences = useCallback((text: string | ReactNode): ReactNode => {
+    if (typeof text === 'string') {
+      // Match citation patterns like [1], [2], etc.
+      const parts: ReactNode[] = []
+      let lastIndex = 0
+      const regex = /\[(\d+)\]/g
+      let match
+      
+      while ((match = regex.exec(text)) !== null) {
+        // Add text before the match
+        if (match.index > lastIndex) {
+          parts.push(text.substring(lastIndex, match.index))
+        }
+        
+        // Add the reference link
+        parts.push(
+          <ReferenceLink 
+            key={`ref-${match.index}-${match[1]}`} 
+            refId={match[1]} 
+            references={message.references} 
+          />
+        )
+        
+        lastIndex = match.index + match[0].length
+      }
+      
+      // Add remaining text
+      if (lastIndex < text.length) {
+        parts.push(text.substring(lastIndex))
+      }
+      
+      return parts.length > 0 ? <>{parts}</> : text
+    }
+
+    if (Array.isArray(text)) {
+      return text.map((child, index) => (
+        <span key={`ref-child-${index}`}>{processTextWithReferences(child)}</span>
+      ))
+    }
+
+    if (isValidElement(text)) {
+      const element = text as React.ReactElement<{ children?: ReactNode }>
+      const children = element.props?.children
+      if (children === undefined) {
+        return element
+      }
+      return cloneElement(element, {
+        ...element.props,
+        children: processTextWithReferences(children)
+      })
+    }
+
+    return text
+  }, [message.references])
+
   const mainMarkdownComponents = useMemo(() => ({
     code: (props: any) => {
       const { inline, className, children, ...restProps } = props;
@@ -129,15 +228,15 @@ export const ChatMessage = ({
         </CodeHighlight>
       );
     },
-    p: ({ children }: { children?: ReactNode }) => <div className="my-2">{children}</div>,
-    h1: ({ children }: { children?: ReactNode }) => <h1 className="text-xl font-bold mt-4 mb-2">{children}</h1>,
-    h2: ({ children }: { children?: ReactNode }) => <h2 className="text-lg font-bold mt-4 mb-2">{children}</h2>,
-    h3: ({ children }: { children?: ReactNode }) => <h3 className="text-base font-bold mt-3 mb-2">{children}</h3>,
-    h4: ({ children }: { children?: ReactNode }) => <h4 className="text-base font-semibold mt-3 mb-2">{children}</h4>,
+    p: ({ children }: { children?: ReactNode }) => <div className="my-2">{processTextWithReferences(children as any)}</div>,
+    h1: ({ children }: { children?: ReactNode }) => <h1 className="text-xl font-bold mt-4 mb-2">{processTextWithReferences(children as any)}</h1>,
+    h2: ({ children }: { children?: ReactNode }) => <h2 className="text-lg font-bold mt-4 mb-2">{processTextWithReferences(children as any)}</h2>,
+    h3: ({ children }: { children?: ReactNode }) => <h3 className="text-base font-bold mt-3 mb-2">{processTextWithReferences(children as any)}</h3>,
+    h4: ({ children }: { children?: ReactNode }) => <h4 className="text-base font-semibold mt-3 mb-2">{processTextWithReferences(children as any)}</h4>,
     ul: ({ children }: { children?: ReactNode }) => <ul className="list-disc pl-5 my-2">{children}</ul>,
     ol: ({ children }: { children?: ReactNode }) => <ol className="list-decimal pl-5 my-2">{children}</ol>,
-    li: ({ children }: { children?: ReactNode }) => <li className="my-1">{children}</li>
-  }), [message.mermaidRendered, message.role]);
+    li: ({ children }: { children?: ReactNode }) => <li className="my-1">{processTextWithReferences(children as any)}</li>
+  }), [message.mermaidRendered, message.role, processTextWithReferences]);
 
   const thinkingMarkdownComponents = useMemo(() => ({
     code: (props: any) => (<CodeHighlight {...props} renderAsDiagram={message.mermaidRendered ?? false} messageRole={message.role} />)
@@ -253,7 +352,22 @@ export const ChatMessage = ({
               rehypeReact
             ]}
             skipHtml={false}
-            components={mainMarkdownComponents}
+            components={{
+              ...mainMarkdownComponents,
+              sup: (props: any) => {
+                const { children, ...restProps } = props
+                const text = typeof children === 'string' ? children : children?.toString()
+                
+                // Check if this is a reference link [1], [2], etc.
+                const refMatch = text?.match(/^\[(\d+)\]$/)
+                if (refMatch && message.references) {
+                  return <ReferenceLink refId={refMatch[1]} references={message.references} />
+                }
+                
+                // Regular superscript
+                return <sup {...restProps}>{children}</sup>
+              }
+            }}
           >
             {finalDisplayContent}
           </ReactMarkdown>

@@ -94,7 +94,7 @@ export type LightragDocumentsScanProgress = {
  * - "mix": Integrates knowledge graph and vector retrieval.
  * - "bypass": Bypasses knowledge retrieval and directly uses the LLM.
  */
-export type QueryMode = 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
+export type QueryMode = 'auto' | 'naive' | 'local' | 'global' | 'hybrid' | 'mix' | 'bypass'
 
 export type Message = {
   role: 'user' | 'assistant' | 'system'
@@ -137,10 +137,27 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Include chunk content in references for display and citation purposes. Default is False. */
+  include_chunk_content?: boolean
+  /** If True, return only a list of source file paths without LLM generation. */
+  files_only?: boolean
+}
+
+export type Reference = {
+  reference_id: string
+  file_path: string
+  content?: string[]
+  entities?: Array<{
+    entity_name: string
+    entity_type: string
+    description?: string
+  }>
 }
 
 export type QueryResponse = {
   response: string
+  references?: Reference[]
+  files?: string[]
 }
 
 export type EntityUpdateResponse = {
@@ -393,7 +410,8 @@ export const queryText = async (request: QueryRequest): Promise<QueryResponse> =
 export const queryTextStream = async (
   request: QueryRequest,
   onChunk: (chunk: string) => void,
-  onError?: (error: string) => void
+  onError?: (error: string) => void,
+  onReferences?: (references: Reference[]) => void
 ) => {
   const apiKey = useSettingsStore.getState().apiKey;
   const token = localStorage.getItem('LIGHTRAG-API-TOKEN');
@@ -470,6 +488,8 @@ export const queryTextStream = async (
               onChunk(parsed.response);
             } else if (parsed.error && onError) {
               onError(parsed.error);
+            } else if (parsed.references && onReferences) {
+              onReferences(parsed.references);
             }
           } catch (error) {
             console.error('Error parsing stream chunk:', line, error);
@@ -487,6 +507,8 @@ export const queryTextStream = async (
           onChunk(parsed.response);
         } else if (parsed.error && onError) {
           onError(parsed.error);
+        } else if (parsed.references && onReferences) {
+          onReferences(parsed.references);
         }
       } catch (error) {
         console.error('Error parsing final chunk:', buffer, error);

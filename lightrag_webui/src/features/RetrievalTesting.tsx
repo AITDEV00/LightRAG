@@ -178,7 +178,7 @@ export default function RetrievalTesting() {
       if (!inputValue.trim() || isLoading) return
 
       // Parse query mode prefix
-      const allowedModes: QueryMode[] = ['naive', 'local', 'global', 'hybrid', 'mix', 'bypass']
+      const allowedModes: QueryMode[] = ['auto', 'naive', 'local', 'global', 'hybrid', 'mix', 'bypass']
       const prefixMatch = inputValue.match(/^\/(\w+)\s+([\s\S]+)/)
       let modeOverride: QueryMode | undefined = undefined
       let actualQuery = inputValue
@@ -370,9 +370,25 @@ export default function RetrievalTesting() {
         // Run query
         if (state.querySettings.stream) {
           let errorMessage = ''
-          await queryTextStream(queryParams, updateAssistantMessage, (error) => {
-            errorMessage += error
-          })
+          await queryTextStream(
+            queryParams, 
+            updateAssistantMessage, 
+            (error) => {
+              errorMessage += error
+            },
+            (references) => {
+              // Update references when received from stream
+              assistantMessage.references = references
+              setMessages((prev) => {
+                const newMessages = [...prev]
+                const lastMessage = newMessages[newMessages.length - 1]
+                if (lastMessage && lastMessage.id === assistantMessage.id) {
+                  lastMessage.references = references
+                }
+                return newMessages
+              })
+            }
+          )
           if (errorMessage) {
             if (assistantMessage.content) {
               errorMessage = assistantMessage.content + '\n' + errorMessage
@@ -382,6 +398,10 @@ export default function RetrievalTesting() {
         } else {
           const response = await queryText(queryParams)
           updateAssistantMessage(response.response)
+          // Add references to the assistant message if available
+          if (response.references) {
+            assistantMessage.references = response.references
+          }
         }
       } catch (err) {
         // Handle error

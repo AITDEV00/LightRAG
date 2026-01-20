@@ -39,7 +39,7 @@ export default function QuerySettings() {
 
   // Default values for reset functionality
   const defaultValues = useMemo(() => ({
-    mode: 'mix' as QueryMode,
+    mode: 'auto' as QueryMode,
     response_type: 'Multiple Paragraphs',
     top_k: 40,
     chunk_top_k: 20,
@@ -137,6 +137,7 @@ export default function QuerySettings() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectGroup>
+                      <SelectItem value="auto">{t('retrievePanel.querySettings.queryModeOptions.auto')}</SelectItem>
                       <SelectItem value="naive">{t('retrievePanel.querySettings.queryModeOptions.naive')}</SelectItem>
                       <SelectItem value="local">{t('retrievePanel.querySettings.queryModeOptions.local')}</SelectItem>
                       <SelectItem value="global">{t('retrievePanel.querySettings.queryModeOptions.global')}</SelectItem>
@@ -486,6 +487,27 @@ export default function QuerySettings() {
                   id="stream"
                   checked={querySettings.stream}
                   onCheckedChange={(checked) => handleChange('stream', checked)}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="include_chunk_content" className="flex-1 ml-1 cursor-help">
+                        Include Chunk Content
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>Include actual chunk content in references for hover display and citations</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="include_chunk_content"
+                  checked={querySettings.include_chunk_content ?? false}
+                  onCheckedChange={(checked) => handleChange('include_chunk_content', checked)}
                 />
               </div>
             </>

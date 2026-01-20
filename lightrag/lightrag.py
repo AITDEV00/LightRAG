@@ -4,6 +4,7 @@ import traceback
 import asyncio
 import configparser
 import os
+import re
 import time
 import warnings
 from dataclasses import asdict, dataclass, field
@@ -52,6 +53,7 @@ from lightrag.constants import (
     DEFAULT_FILE_PATH_MORE_PLACEHOLDER,
 )
 from lightrag.utils import get_env_value
+import json_repair
 
 from lightrag.kg import (
     STORAGES,
@@ -2609,6 +2611,7 @@ class LightRAG:
             fields at the top level.
         """
         global_config = asdict(self)
+        auto_mode_info: dict[str, Any] | None = None
 
         # Create a copy of param to avoid modifying the original
         data_param = QueryParam(
@@ -2630,6 +2633,12 @@ class LightRAG:
             user_prompt=param.user_prompt,
             enable_rerank=param.enable_rerank,
         )
+
+        if data_param.mode == "auto":
+            selected_mode, auto_mode_info = await self._select_auto_mode(
+                query.strip(), data_param, global_config
+            )
+            data_param.mode = selected_mode
 
         query_result = None
 
@@ -2684,10 +2693,15 @@ class LightRAG:
                     "mode": data_param.mode,
                 },
             }
+            if auto_mode_info:
+                final_data["metadata"]["auto_mode"] = auto_mode_info
             logger.info("[aquery_data] Query returned no results.")
         else:
             # Extract raw_data from QueryResult
             final_data = query_result.raw_data or {}
+            if auto_mode_info:
+                final_data.setdefault("metadata", {})
+                final_data["metadata"]["auto_mode"] = auto_mode_info
 
             # Log final result counts - adapt to new data format from convert_to_user_format
             if final_data and "data" in final_data:
@@ -2703,6 +2717,81 @@ class LightRAG:
 
         await self._query_done()
         return final_data
+
+    async def _select_auto_mode(
+        self,
+        query: str,
+        param: QueryParam,
+        global_config: dict[str, Any],
+    ) -> tuple[str, dict[str, Any]]:
+        def heuristic_mode_from_query(text: str) -> str:
+            q = (text or "").lower()
+            if not q:
+                return "mix"
+
+            def has_word(phrase: str) -> bool:
+                return re.search(rf"\\b{re.escape(phrase)}\\b", q) is not None
+
+            if any(phrase in q for phrase in ("difference between", "define ", "explain ", "what is ", "what does ")):
+                return "bypass"
+            if any(phrase in q for phrase in ("compare", "relate", "relation", "relationship", "similarities", "connects", "connection")):
+                return "hybrid"
+            if any(phrase in q for phrase in ("comprehensive", "overview", "map out", "ecosystem", "interconnected", "complete picture", "across all entities")):
+                return "mix"
+            if any(phrase in q for phrase in ("common ", "patterns", "which entities", "which organizations", "leading in", "how do different", "across multiple", "across organizations", "across entities")):
+                return "global"
+            if re.search(
+                r"\bhow many\b|\bwhat percentage\b|\bwhat percent\b|\bscore\b|\brate\b|\bnumber\b|\bcount\b",
+                q,
+            ):
+                return "naive"
+            if any(phrase in q for phrase in ("mentioned in the documents", "in the documents", "in the report")):
+                return "naive"
+            return "local"
+
+        default_mode = "mix"
+        response_text = ""
+        parsed: dict[str, Any] = {}
+        error_message: str | None = None
+        try:
+            use_model_func = param.model_func or global_config["llm_model_func"]
+            use_model_func = partial(use_model_func, _priority=6)
+            system_prompt = PROMPTS["query_mode_classifier"].replace(
+                "{query}", query.strip()
+            )
+            response = await use_model_func(
+                query.strip(),
+                system_prompt=system_prompt,
+                history_messages=param.conversation_history,
+                enable_cot=False,
+                stream=False,
+            )
+            response_text = response if isinstance(response, str) else ""
+            parsed = json_repair.loads(response_text)
+            if not isinstance(parsed, dict):
+                parsed = {}
+        except Exception as exc:
+            error_message = str(exc)
+
+        mode = str(parsed.get("mode", default_mode)).strip().lower()
+        allowed_modes = {"naive", "local", "global", "hybrid", "mix", "bypass"}
+        if mode not in allowed_modes:
+            mode = default_mode
+        if error_message:
+            mode = heuristic_mode_from_query(query)
+        confidence = parsed.get("confidence")
+        try:
+            confidence = float(confidence) if confidence is not None else None
+        except (TypeError, ValueError):
+            confidence = None
+        reason = parsed.get("reason")
+        return mode, {
+            "selected_mode": mode,
+            "confidence": confidence,
+            "reason": reason or ("heuristic_fallback" if error_message else None),
+            "raw_response": response_text,
+            "error": error_message,
+        }
 
     async def aquery_llm(
         self,
@@ -2727,9 +2816,16 @@ class LightRAG:
         logger.debug(f"[aquery_llm] Query param: {param}")
 
         global_config = asdict(self)
+        auto_mode_info: dict[str, Any] | None = None
 
         try:
             query_result = None
+
+            if param.mode == "auto":
+                selected_mode, auto_mode_info = await self._select_auto_mode(
+                    query.strip(), param, global_config
+                )
+                param.mode = selected_mode
 
             if param.mode in ["local", "global", "hybrid", "mix"]:
                 query_result = await kg_query(
@@ -2768,7 +2864,7 @@ class LightRAG:
                     stream=param.stream,
                 )
                 if type(response) is str:
-                    return {
+                    result = {
                         "status": "success",
                         "message": "Bypass mode LLM non streaming response",
                         "data": {},
@@ -2780,7 +2876,7 @@ class LightRAG:
                         },
                     }
                 else:
-                    return {
+                    result = {
                         "status": "success",
                         "message": "Bypass mode LLM streaming response",
                         "data": {},
@@ -2791,6 +2887,9 @@ class LightRAG:
                             "is_streaming": True,
                         },
                     }
+                if auto_mode_info:
+                    result["metadata"]["auto_mode"] = auto_mode_info
+                return result
             else:
                 raise ValueError(f"Unknown mode {param.mode}")
 
@@ -2815,6 +2914,9 @@ class LightRAG:
 
             # Extract structured data from query result
             raw_data = query_result.raw_data or {}
+            if auto_mode_info:
+                raw_data.setdefault("metadata", {})
+                raw_data["metadata"]["auto_mode"] = auto_mode_info
             raw_data["llm_response"] = {
                 "content": query_result.content
                 if not query_result.is_streaming

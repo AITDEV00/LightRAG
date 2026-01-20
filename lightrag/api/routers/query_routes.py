@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from lightrag.base import QueryParam
+from lightrag.constants import GRAPH_FIELD_SEP
+from lightrag.utils import split_string_by_multi_markers
 from lightrag.api.utils_api import get_combined_auth_dependency
 from pydantic import BaseModel, Field, field_validator
 
@@ -22,8 +24,8 @@ class QueryRequest(BaseModel):
         description="The query text",
     )
 
-    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass"] = Field(
-        default="mix",
+    mode: Literal["local", "global", "hybrid", "naive", "mix", "bypass", "auto"] = Field(
+        default="auto",
         description="Query mode",
     )
 
@@ -108,6 +110,11 @@ class QueryRequest(BaseModel):
         description="If True, includes actual chunk text content in references. Only applies when include_references=True. Useful for evaluation and debugging.",
     )
 
+    files_only: Optional[bool] = Field(
+        default=False,
+        description="If True, return only a list of source file paths without LLM generation.",
+    )
+
     stream: Optional[bool] = Field(
         default=True,
         description="If True, enables streaming output for real-time responses. Only affects /query/stream endpoint.",
@@ -137,7 +144,7 @@ class QueryRequest(BaseModel):
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
-            exclude_none=True, exclude={"query", "include_chunk_content"}
+            exclude_none=True, exclude={"query", "include_chunk_content", "files_only"}
         )
 
         # Ensure `mode` and `stream` are set explicitly
@@ -160,6 +167,10 @@ class ReferenceItem(BaseModel):
 class QueryResponse(BaseModel):
     response: str = Field(
         description="The generated response",
+    )
+    files: Optional[List[str]] = Field(
+        default=None,
+        description="List of source file paths (when files_only=True).",
     )
     references: Optional[List[ReferenceItem]] = Field(
         default=None,
@@ -195,6 +206,26 @@ class StreamChunkResponse(BaseModel):
 
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
     combined_auth = get_combined_auth_dependency(api_key)
+
+    def _collect_file_paths(data: Dict[str, Any]) -> List[str]:
+        seen = set()
+        result = []
+
+        for ref in data.get("references", []):
+            file_path = ref.get("file_path")
+            if file_path and file_path not in seen:
+                seen.add(file_path)
+                result.append(file_path)
+
+        for section_name in ("entities", "relationships", "chunks"):
+            for item in data.get(section_name, []):
+                file_path = item.get("file_path", "")
+                for path in split_string_by_multi_markers(file_path, [GRAPH_FIELD_SEP]):
+                    if path and path not in seen:
+                        seen.add(path)
+                        result.append(path)
+
+        return result
 
     @router.post(
         "/query",
@@ -411,6 +442,34 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # Force stream=False for /query endpoint regardless of include_references setting
             param.stream = False
 
+            if request.files_only:
+                data_result = await rag.aquery_data(request.query, param=param)
+                data = data_result.get("data", {}) if isinstance(data_result, dict) else {}
+                files = _collect_file_paths(data)
+                references = data.get("references", [])
+                if request.include_references and request.include_chunk_content:
+                    chunks = data.get("chunks", [])
+                    ref_id_to_content = {}
+                    for chunk in chunks:
+                        ref_id = chunk.get("reference_id", "")
+                        content = chunk.get("content", "")
+                        if ref_id and content:
+                            ref_id_to_content.setdefault(ref_id, []).append(content)
+
+                    enriched_references = []
+                    for ref in references:
+                        ref_copy = ref.copy()
+                        ref_id = ref.get("reference_id", "")
+                        if ref_id in ref_id_to_content:
+                            ref_copy["content"] = ref_id_to_content[ref_id]
+                        enriched_references.append(ref_copy)
+                    references = enriched_references
+                return QueryResponse(
+                    response=f"Found {len(files)} documents.",
+                    files=files,
+                    references=references if request.include_references else None,
+                )
+
             # Unified approach: always use aquery_llm for both cases
             result = await rag.aquery_llm(request.query, param=param)
 
@@ -449,9 +508,11 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # Return response with or without references based on request
             if request.include_references:
-                return QueryResponse(response=response_content, references=references)
+                return QueryResponse(
+                    response=response_content, references=references, files=None
+                )
             else:
-                return QueryResponse(response=response_content, references=None)
+                return QueryResponse(response=response_content, references=None, files=None)
         except Exception as e:
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))

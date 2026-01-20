@@ -227,7 +227,8 @@ Consider the conversation history if provided to maintain conversational flow an
   - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
   - Scrutinize both `Knowledge Graph Data` and `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
-  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
+  - Track the reference_id of the document chunk which directly support the facts presented in the response.
+  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is the numeric reference_id (for example: [1]). Use only reference_id values that appear in the `Reference Document List` and do not include any extra text like "reference_id:".
   - Generate a references section at the end of the response. Each reference document must directly support the facts presented in the response.
   - Do not generate anything after the reference section.
 
@@ -247,17 +248,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
   - Do not generate footnotes section or any comment, summary, or explanation after the references.
-
-5. Reference Section Example:
-```
-### References
-
-- [1] Document Title One
-- [2] Document Title Two
-- [3] Document Title Three
-```
-
-6. Additional Instructions: {user_prompt}
+5. Additional Instructions: {user_prompt}
 
 
 ---Context---
@@ -281,7 +272,8 @@ Consider the conversation history if provided to maintain conversational flow an
   - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
   - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
-  - Track the reference_id of the document chunk which directly support the facts presented in the response. Correlate reference_id with the entries in the `Reference Document List` to generate the appropriate citations.
+  - Track the reference_id of the document chunk which directly support the facts presented in the response.
+  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is the numeric reference_id (for example: [1]). Use only reference_id values that appear in the `Reference Document List` and do not include any extra text like "reference_id:".
   - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
   - Do not generate anything after the reference section.
 
@@ -301,17 +293,7 @@ Consider the conversation history if provided to maintain conversational flow an
   - Output each citation on an individual line
   - Provide maximum of 5 most relevant citations.
   - Do not generate footnotes section or any comment, summary, or explanation after the references.
-
-5. Reference Section Example:
-```
-### References
-
-- [1] Document Title One
-- [2] Document Title Two
-- [3] Document Title Three
-```
-
-6. Additional Instructions: {user_prompt}
+5. Additional Instructions: {user_prompt}
 
 
 ---Context---
@@ -419,3 +401,29 @@ Output:
 
 """,
 ]
+
+PROMPTS["query_mode_classifier"] = """---Role---
+You are a query router for a Retrieval-Augmented Generation system.
+
+---Goal---
+Select the single best retrieval mode for the given user query.
+
+---Valid Modes---
+- naive: direct factual lookup from document chunks
+- local: entity-focused questions about a specific organization/entity
+- global: cross-entity relationships and patterns
+- hybrid: compare or relate specific entities
+- mix: broad, comprehensive, multi-entity analysis
+- bypass: general knowledge unrelated to the document corpus
+
+---Rules---
+1. Choose exactly one mode.
+2. Output JSON only, no extra text.
+3. Use this schema:
+{"mode": "<mode>", "confidence": 0.0, "reason": "<short reason>"}
+4. If the user asks which document/source mentions qsomething, or asks for citations/sources, choose "naive".
+5. If the user asks for a definition or general explanation (e.g., "define", "what is", "explain") and does not mention documents/sources/citations, choose "bypass".
+
+---Query---
+{query}
+"""
