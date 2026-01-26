@@ -1218,10 +1218,10 @@ class LightRAG:
 
         # Calculate available context
         try:
-            max_tokens = getattr(self, "max_token_size", 32768)
+            max_tokens = getattr(self, "max_token_size", 128000)
         except Exception:
-            max_tokens = 32768
-            
+            max_tokens = 128000
+
         try:
             logger.info(f"Generating summary for document (len={len(content)})...")
             async with pipeline_status_lock:
@@ -1230,15 +1230,21 @@ class LightRAG:
                  if not pipeline_status["history_messages"] or "Generating document summary" not in pipeline_status["history_messages"][-1]:
                      pipeline_status["history_messages"].append("Generating document summary with LLM...")
 
-            # Simple prompt for summarization
+            # Structured prompt for summarization
             prompt = (
                 "Please generate a summary for the following document.\n"
                 "The summary should be concise but comprehensive, capturing the main topics and key entities.\n\n"
+                "Structure your response with the following sections:\n"
+                "- High-level Summary: An overview of the document.\n"
+                "- Main Points: Key takeaway points.\n"
+                "- Key Concepts: Important concepts discussed.\n"
+                "- Entities: Major entities mentioned.\n"
+                "- Data Types: Specific data types or structures mentioned (if any).\n\n"
                 "Document Content:\n{content}\n\n"
                 "Summary:"
             )
             
-            output_tokens = int(max_tokens / 2)
+            output_tokens = 512
             
             # Truncate content if needed to fit context (input + output = max)
             # Reserve some buffer for prompt structure (approx 500 chars)
@@ -1274,6 +1280,85 @@ class LightRAG:
                  pipeline_status["latest_message"] = msg
                  pipeline_status["history_messages"].append(msg)
             return get_content_summary(content)
+
+    async def agenerate_doc_summary_recursive(self, content: str, output_tokens: int = 512) -> str:
+        """Generate document summary using LLM recursively for long documents"""
+        # Get pipeline status for logging
+        pipeline_status = await get_namespace_data("pipeline_status")
+        pipeline_status_lock = get_pipeline_status_lock()
+
+        # Calculate available context
+        try:
+            max_tokens = getattr(self, "max_token_size", 128000)
+        except Exception:
+            max_tokens = 128000
+
+        # Structured prompt for summarization
+        prompt = (
+            "Please generate a summary for the following document.\n"
+            "The summary should be concise but comprehensive, capturing the main topics and key entities.\n\n"
+            "Structure your response with the following sections:\n"
+            "- High-level Summary: An overview of the document.\n"
+            "- Main Points: Key takeaway points.\n"
+            "- Key Concepts: Important concepts discussed.\n"
+            "- Entities: Major entities mentioned.\n"
+            "- Data Types: Specific data types or structures mentioned (if any).\n\n"
+            "Document Content:\n{content}\n\n"
+            "Summary:"
+        )
+
+        # Truncate content if needed to fit context (input + output = max)
+        # Reserve some buffer for prompt structure (approx 500 chars)
+        input_limit_chars = (max_tokens - output_tokens) * 3
+        
+        if len(content) > input_limit_chars:
+            # Recursive case: Split and conquer
+            chunk_size = input_limit_chars
+            chunks = [content[i:i + chunk_size] for i in range(0, len(content), chunk_size)]
+            
+            # Use a larger context for intermediate summaries to preserve details,
+            # but scale it with the model's capacity.
+            # max(2048, max_tokens // 8) ensures at least 2k tokens if possible, 
+            # while respecting the model's limits (e.g. 1/8th of total context).
+            intermediate_output_tokens = max(2048, max_tokens // 8)
+            
+            logger.info(f"Recursively summarizing document (len={len(content)}) in {len(chunks)} chunks...")
+            
+            # Recursively summarize chunks
+            tasks = [
+                self.agenerate_doc_summary_recursive(chunk, output_tokens=intermediate_output_tokens)
+                for chunk in chunks
+            ]
+            sub_summaries = await asyncio.gather(*tasks)
+            
+            # Combine summaries and summarize again
+            combined_content = "\n\n".join(sub_summaries)
+            return await self.agenerate_doc_summary_recursive(combined_content, output_tokens=output_tokens)
+            
+        else:
+            # Base case: Generate summary for content that fits
+            try:
+                # Log only for significant chunks to avoid spamming
+                if len(content) > 1000:
+                    async with pipeline_status_lock:
+                        pipeline_status["latest_message"] = "Generating recursive document summary with LLM..."
+            
+                formatted_prompt = prompt.format(content=content)
+                
+                summary = await self.llm_model_func(
+                    formatted_prompt, 
+                    max_tokens=output_tokens
+                )
+                
+                if summary and summary.strip():
+                    return summary.strip()
+                
+                # Fallback
+                return get_content_summary(content)
+
+            except Exception as e:
+                logger.error(f"Failed to generate summary: {e}. Falling back to truncation.")
+                return get_content_summary(content)
 
     async def apipeline_enqueue_documents(
         self,
