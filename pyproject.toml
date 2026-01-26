@@ -22,6 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp",
+    "asyncpg>=0.30.0",
     "configparser",
     "future",
     "google-genai>=1.0.0,<2.0.0",

@@ -2023,6 +2023,7 @@ name = "lightrag-hku"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
+    { name = "asyncpg" },
     { name = "configparser" },
     { name = "future" },
     { name = "google-genai" },
@@ -2150,6 +2151,7 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'api'" },
     { name = "anthropic", marker = "extra == 'offline-llm'", specifier = ">=0.18.0,<1.0.0" },
     { name = "ascii-colors", marker = "extra == 'api'" },
+    { name = "asyncpg", specifier = ">=0.30.0" },
     { name = "asyncpg", marker = "extra == 'api'" },
     { name = "asyncpg", marker = "extra == 'offline-storage'", specifier = ">=0.29.0,<1.0.0" },
     { name = "configparser" },
