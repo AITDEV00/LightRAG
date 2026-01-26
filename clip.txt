@@ -7,3 +7,7 @@ uv pip install -e libs/lightrag_auto_er
 pkill -9 -f "python manager.py --disable-auth --auto-create --root-path /lightrag"
 
 pkill -9 -f "manager.py|lightrag-server"
+
+
+git fetch upstream --tags
+git push origin --tags
