@@ -67,3 +67,10 @@ TODO.md
 .github
 .gitignore
 .pre-commit-config.yaml
+
+# Multiuser local artifacts
+multiuser/data
+multiuser/inputs
+multiuser/logs
+multiuser/test
+multiuser/*.log

@@ -19,7 +19,11 @@ class WorkspaceCreate(BaseModel):
     @field_validator('workspace')
     def validate_name(cls, v):
         if not re.match(r'^[a-zA-Z0-9_]+$', v):
-            raise ValueError('Workspace name must contain only a-z, A-Z, 0-9, and _')
+            raise ValueError(
+                "Invalid workspace name. "
+                "Rule: Name must contain only alphanumeric characters (A-Z, a-z, 0-9) and underscores (_). "
+                "Accepted examples: 'my_project', 'research_2024', 'dev_env'."
+            )
         return v
 
 

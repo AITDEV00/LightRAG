@@ -10,6 +10,7 @@ from app.common.process_manager import manager
 from app.features.workspaces.schemas import WorkspaceConfig
 from app.features.workspaces.repository import get_workspace_by_name, get_workspace_by_key
 from app.features.workspaces.create_workspace.service import create_workspace
+from app.features.gateway.schemas import RoutingResult
 
 
 async def wait_for_health(port: int, timeout: float = 15.0):
@@ -32,21 +33,6 @@ async def wait_for_health(port: int, timeout: float = 15.0):
             except Exception:
                 # Any other error (like a 500 from the app) means it's reachable
                 return True
-
-
-class RoutingResult:
-    """Result of workspace routing."""
-    def __init__(
-        self,
-        workspace: str,
-        port: int,
-        api_key: str,
-        was_started_just_now: bool = False
-    ):
-        self.workspace = workspace
-        self.port = port
-        self.api_key = api_key
-        self.was_started_just_now = was_started_just_now
 
 
 async def resolve_workspace_no_auth(workspace_name: str) -> RoutingResult:
@@ -79,12 +65,14 @@ async def resolve_workspace_no_auth(workspace_name: str) -> RoutingResult:
     if config:
         # Start process if not running
         if config.workspace not in manager.processes:
-            manager.start_process(config)
+            await manager.start_process(config)
             was_started_just_now = True
+        # Get potentially updated config (port may have changed)
+        actual_config = manager.configs.get(workspace_name, config)
         return RoutingResult(
-            workspace=config.workspace,
-            port=config.port,
-            api_key=config.api_key,
+            workspace=actual_config.workspace,
+            port=actual_config.port,
+            api_key=actual_config.api_key,
             was_started_just_now=was_started_just_now
         )
     
@@ -92,11 +80,13 @@ async def resolve_workspace_no_auth(workspace_name: str) -> RoutingResult:
     if args.auto_create:
         print(f"✨ Auto-creating workspace: {workspace_name}")
         config = await create_workspace(workspace_name)
-        manager.start_process(config)
+        await manager.start_process(config)
+        # Get potentially updated config (port may have changed)
+        actual_config = manager.configs.get(workspace_name, config)
         return RoutingResult(
-            workspace=config.workspace,
-            port=config.port,
-            api_key=config.api_key,
+            workspace=actual_config.workspace,
+            port=actual_config.port,
+            api_key=actual_config.api_key,
             was_started_just_now=True
         )
     
@@ -132,12 +122,14 @@ async def resolve_workspace_with_auth(api_key: str) -> RoutingResult:
     if config:
         # Start process if not running
         if config.workspace not in manager.processes:
-            manager.start_process(config)
+            await manager.start_process(config)
             was_started_just_now = True
+        # Get potentially updated config (port may have changed)
+        actual_config = manager.configs.get(config.workspace, config)
         return RoutingResult(
-            workspace=config.workspace,
-            port=config.port,
-            api_key=config.api_key,
+            workspace=actual_config.workspace,
+            port=actual_config.port,
+            api_key=actual_config.api_key,
             was_started_just_now=was_started_just_now
         )
     

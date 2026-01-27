@@ -22,7 +22,17 @@ load_dotenv()
 
 # PostgreSQL Configuration
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
-POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+
+# Handle Kubernetes/Docker variable collision where POSTGRES_PORT might be "tcp://..."
+# We prioritize LIGHTRAG_POSTGRES_PORT, then try parsing POSTGRES_PORT.
+# If parsing fails (e.g. it's a URL), we fallback to default 5432.
+_pg_port_env = os.getenv("LIGHTRAG_POSTGRES_PORT") or os.getenv("POSTGRES_PORT", "5432")
+try:
+    POSTGRES_PORT = int(_pg_port_env)
+except ValueError:
+    print(f"⚠️ [Config] POSTGRES_PORT value '{_pg_port_env}' is not an integer (likely K8s service URL). Defaulting to 5432.")
+    POSTGRES_PORT = 5432
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "").strip("'\"")
 POSTGRES_DATABASE = os.getenv("POSTGRES_DATABASE", "postgres")

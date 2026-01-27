@@ -30,3 +30,15 @@ async def get_workspace_by_name(name: str) -> Optional[WorkspaceConfig]:
     async with pool.acquire() as conn:
         row = await conn.fetchrow("SELECT workspace, api_key, port FROM lightrag_workspaces WHERE workspace = $1", name)
         return WorkspaceConfig(workspace=row['workspace'], api_key=row['api_key'], port=row['port']) if row else None
+
+
+async def update_workspace_port(workspace: str, new_port: int) -> None:
+    """Update a workspace's port in the database."""
+    pool = get_pool()
+    async with pool.acquire() as conn:
+        result = await conn.execute(
+            "UPDATE lightrag_workspaces SET port = $1 WHERE workspace = $2",
+            new_port, workspace
+        )
+        print(f"🗄️ [DB] Updated port for '{workspace}' to {new_port} (result: {result})")
+

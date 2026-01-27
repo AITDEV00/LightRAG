@@ -25,7 +25,7 @@ async def create_workspace_endpoint(
     try:
         config = await create_workspace(data.workspace)
         # Start the process via manager
-        manager.start_process(config)
+        await manager.start_process(config)
         return {"status": "created", "workspace": config.workspace, "api_key": config.api_key}
     except asyncpg.UniqueViolationError:
         raise HTTPException(400, "Workspace already exists")

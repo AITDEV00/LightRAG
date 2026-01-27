@@ -10,6 +10,7 @@ import socket
 import secrets
 import re
 import httpx
+import threading
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -22,7 +23,7 @@ from app.config.settings import (
     args,
 )
 from app.features.workspaces.schemas import WorkspaceConfig
-from app.features.workspaces.repository import get_all_workspaces, get_workspace_by_name
+from app.features.workspaces.repository import get_all_workspaces, get_workspace_by_name, update_workspace_port
 
 
 # Log rotation interval in minutes
@@ -45,19 +46,75 @@ def get_log_path(workspace: str) -> str:
     return os.path.join(workspace_log_dir, filename)
 
 
+# Track ports assigned during this session (to avoid double-assignment during rapid startup)
+_assigned_ports: set[int] = set()
+
+
+def is_port_free(port: int) -> bool:
+    """Check if a port is available for binding."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def find_available_port(start_port: int = START_PORT_RANGE) -> int:
+    """Find a port that can actually be bound (also checks in-memory tracking)."""
+    global _assigned_ports
+    port = start_port
+    while port < 65535:
+        if port not in _assigned_ports and is_port_free(port):
+            _assigned_ports.add(port)  # Mark as assigned
+            return port
+        port += 1
+    raise RuntimeError("No free ports available.")
+
+
 def kill_process_on_port(port: int):
-    """Finds and kills any process listening on the given port."""
+    """Forcefully kill any process on the given port and wait until it's free."""
+    # Method 1: Use fuser -k (most aggressive)
     try:
-        result = subprocess.check_output(f"lsof -t -i:{port}", shell=True, stderr=subprocess.DEVNULL)
-        pids = result.decode().strip().split('\n')
-        for pid in pids:
-            if pid:
-                print(f"🧹 [Cleanup] Killing zombie process {pid} on port {port}...")
-                os.kill(int(pid), signal.SIGKILL)
-    except subprocess.CalledProcessError:
+        subprocess.run(
+            f"fuser -k {port}/tcp",
+            shell=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5
+        )
+    except Exception:
         pass
-    except Exception as e:
-        print(f"⚠️ [Cleanup] Failed to cleanup port {port}: {e}")
+    
+    # Method 2: Fallback to lsof + SIGKILL if fuser didn't clean it
+    for i in range(5):
+        try:
+            result = subprocess.check_output(f"lsof -t -i:{port}", shell=True, stderr=subprocess.DEVNULL)
+            pids = result.decode().strip().split('\n')
+            for pid in pids:
+                if pid:
+                    try:
+                        os.kill(int(pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+            time.sleep(0.2)
+        except subprocess.CalledProcessError:
+            break  # Port is free
+        except Exception:
+            break
+    
+    # Final verification: wait until we can actually bind
+    for _ in range(10):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind(("127.0.0.1", port))
+                return  # Port is free!
+            except OSError:
+                time.sleep(0.2)
+    
+    print(f"⚠️ [Cleanup] Port {port} still in use after cleanup attempts")
 
 
 async def find_free_port(start_port: int = START_PORT_RANGE) -> int:
@@ -87,6 +144,7 @@ class LightRAGManager:
         self.start_times: Dict[str, float] = {}
         self.log_files: Dict[str, any] = {}
         self.log_paths: Dict[str, str] = {}  # Track current log path per workspace
+        self.log_locks: Dict[str, threading.Lock] = {}  # Thread-safe writing/rotating
         self.running = True
 
     async def launch_startup_sequence(self):
@@ -100,7 +158,7 @@ class LightRAGManager:
             
             self.configs[ws.workspace] = ws
             print(f"⏳ [Startup] Launching {i+1}/{len(workspaces)}: '{ws.workspace}'...")
-            self.start_process(ws)
+            await self.start_process(ws)
             
             if i < len(workspaces) - 1:
                 print(f"zzz [Startup] Cooling down for {STARTUP_STAGGER}s before next launch...")
@@ -108,13 +166,51 @@ class LightRAGManager:
         
         print("✅ [Startup] Sequence complete.")
 
-    def start_process(self, config: WorkspaceConfig):
+    def _log_relay(self, workspace: str, stream):
+        """Background thread to relay logs from subprocess pipe to current log file."""
+        for line in iter(stream.readline, b''):
+            lock = self.log_locks.get(workspace)
+            if not lock:
+                break
+            
+            with lock:
+                outfile = self.log_files.get(workspace)
+                if outfile and not outfile.closed:
+                    try:
+                        # Write raw bytes is fine since we open file in 'ab' or 'wb' mode?
+                        # Since we opened with 'a' (text), we need to decode.
+                        # Using 'replace' to safely handle encoding errors.
+                        decoded_line = line.decode('utf-8', errors='replace')
+                        outfile.write(decoded_line)
+                        outfile.flush()
+                    except Exception:
+                        pass
+        stream.close()
+
+    async def start_process(self, config: WorkspaceConfig):
         """Start a LightRAG worker process for the given workspace."""
+        global _assigned_ports
+        
         if config.workspace in self.processes and self.processes[config.workspace].poll() is None:
             return
 
-        # 1. CLEANUP: Ensure port is free
-        kill_process_on_port(config.port)
+        # 1. DYNAMIC PORT: Find an available port
+        port = config.port
+        if port not in _assigned_ports and is_port_free(port):
+            # Original port is available, mark it as assigned
+            _assigned_ports.add(port)
+        elif port in _assigned_ports or not is_port_free(port):
+            # Port is in use or already assigned
+            print(f"⚠️ [Port] {port} is busy for '{config.workspace}', scanning for free port...")
+            port = find_available_port(START_PORT_RANGE)
+            print(f"✅ [Port] Found free port {port} for '{config.workspace}'")
+            # Update DB with new port
+            try:
+                await update_workspace_port(config.workspace, port)
+            except Exception as e:
+                print(f"❌ [DB] Failed to update port for '{config.workspace}': {e}")
+            # Update config object
+            config = WorkspaceConfig(workspace=config.workspace, api_key=config.api_key, port=port)
 
         work_dir = os.path.join(DATA_ROOT, config.workspace)
         os.makedirs(work_dir, exist_ok=True)
@@ -127,18 +223,19 @@ class LightRAGManager:
         if not args.disable_auth and config.api_key:
             env["LIGHTRAG_API_KEY"] = config.api_key
 
-        print(f"🚀 [Manager] Spawning '{config.workspace}' on port {config.port}...")
+        print(f"🚀 [Manager] Spawning '{config.workspace}' on port {port}...")
         
-        cmd = ["lightrag-server", "--port", str(config.port), "--host", "127.0.0.1"]
+        cmd = ["lightrag-server", "--port", str(port), "--host", "127.0.0.1"]
         
         try:
             log_path = get_log_path(config.workspace)
-            log_file = open(log_path, "a")
+            log_file = open(log_path, "a")  # Text mode
             
+            # Use PIPE for stdout so we can capture and relay it
             proc = subprocess.Popen(
                 cmd,
                 env=env,
-                stdout=log_file,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT
             )
             
@@ -147,6 +244,15 @@ class LightRAGManager:
             self.start_times[config.workspace] = time.time()
             self.log_files[config.workspace] = log_file
             self.log_paths[config.workspace] = log_path
+            self.log_locks[config.workspace] = threading.Lock()
+            
+            # Start relay thread
+            t = threading.Thread(
+                target=self._log_relay, 
+                args=(config.workspace, proc.stdout),
+                daemon=True
+            )
+            t.start()
             
             print(f"📝 [Logs] {config.workspace} -> {log_path}")
             
@@ -167,27 +273,25 @@ class LightRAGManager:
             if new_log_path != current_log_path:
                 print(f"🔄 [Logs] Rotating {workspace} -> {new_log_path}")
                 
+                lock = self.log_locks.get(workspace)
+                if not lock:
+                    continue
+
                 try:
-                    old_log_file = self.log_files.get(workspace)
-                    if old_log_file is None:
-                        continue
-                    
-                    # Get the fd that subprocess is writing to
-                    old_fd = old_log_file.fileno()
-                    
-                    # Open new log file
-                    new_log_file = open(new_log_path, "a")
-                    
-                    # Redirect: make old fd point to new file
-                    # This changes where subprocess writes without restarting it
-                    os.dup2(new_log_file.fileno(), old_fd)
-                    
-                    # Close the new file handle (fd is now duplicated to old_fd)
-                    new_log_file.close()
-                    
-                    # Update tracking (old_log_file handle now writes to new file)
-                    self.log_paths[workspace] = new_log_path
-                    
+                    with lock:
+                        old_log_file = self.log_files.get(workspace)
+                        
+                        # Open new log file
+                        new_log_file = open(new_log_path, "a")
+                        
+                        # Update reference
+                        self.log_files[workspace] = new_log_file
+                        self.log_paths[workspace] = new_log_path
+
+                        # Close old file
+                        if old_log_file:
+                            old_log_file.close()
+
                 except Exception as e:
                     print(f"⚠️ [Logs] Failed to rotate {workspace}: {e}")
 
@@ -196,16 +300,45 @@ class LightRAGManager:
         if workspace in self.processes:
             print(f"🛑 [Manager] Stopping {workspace}...")
             proc = self.processes[workspace]
+            port = self.configs.get(workspace, None)
+            port = port.port if port else None
+            
+            # Try graceful termination first
             proc.terminate()
             try:
                 proc.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                # IMPORTANT: Wait for the killed process to be reaped
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass  # Process is truly stuck, but we tried
+            
             del self.processes[workspace]
             
+            # Forcefully kill anything still on the port
+            if port:
+                kill_process_on_port(port)
+            
+            # Close files and cleanup
+            # Note: The relay thread will exit when it sees EOF from the pipe
             if workspace in self.log_files:
-                self.log_files[workspace].close()
+                if workspace in self.log_locks:
+                    try:
+                        with self.log_locks[workspace]:
+                            self.log_files[workspace].close()
+                    except:
+                        pass
+                else:
+                    try:
+                        self.log_files[workspace].close()
+                    except:
+                        pass
                 del self.log_files[workspace]
+            
+            if workspace in self.log_locks:
+                del self.log_locks[workspace]
             
             if workspace in self.log_paths:
                 del self.log_paths[workspace]
@@ -244,7 +377,7 @@ class LightRAGManager:
 
                 # FIX: Restart using DB config
                 if config:
-                    self.start_process(config)
+                    await self.start_process(config)
                 else:
                     print(f"❌ [Watchdog] Cannot restart '{ws_name}': Config missing from DB.")
                 continue
@@ -273,21 +406,7 @@ class LightRAGManager:
                 else:
                     print(f"🧟 [Watchdog] '{ws_name}' unresponsive: {e}. Restarting...")
                     self.stop_process(ws_name)
-                    self.start_process(config)
-
-    async def create_new_workspace(self, workspace_name: str) -> WorkspaceConfig:
-        """Create a new workspace with auto-generated API key and port."""
-        from app.features.workspaces.create_workspace.repository import add_workspace_to_db
-        
-        if not re.match(r'^[a-zA-Z0-9_]+$', workspace_name):
-            raise ValueError('Invalid workspace name')
-            
-        api_key = secrets.token_urlsafe(32)
-        new_port = await find_free_port(START_PORT_RANGE)
-        config = WorkspaceConfig(workspace=workspace_name, api_key=api_key, port=new_port)
-        await add_workspace_to_db(config)
-        self.start_process(config)
-        return config
+                    await self.start_process(config)
 
 
 # Singleton instance
