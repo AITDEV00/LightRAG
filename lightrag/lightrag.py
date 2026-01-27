@@ -68,6 +68,7 @@ from lightrag.kg.shared_storage import (
     get_default_workspace,
     set_default_workspace,
     get_namespace_lock,
+    get_pipeline_status_lock,
 )
 
 from lightrag.base import (
@@ -2330,6 +2331,7 @@ class LightRAG:
             log_message = "Enqueued document processing pipeline stopped"
             logger.info(log_message)
             # Always reset busy status and cancellation flag when done or if an exception occurs (with lock)
+            has_pending = False
             async with pipeline_status_lock:
                 pipeline_status["busy"] = False
                 pipeline_status["cancellation_requested"] = (
@@ -2337,6 +2339,21 @@ class LightRAG:
                 )
                 pipeline_status["latest_message"] = log_message
                 pipeline_status["history_messages"].append(log_message)
+                # Check if there were pending requests while we were busy
+                has_pending = pipeline_status.get("request_pending", False)
+
+            # If there were pending requests, recursively process them
+            # This fixes a race condition where documents uploaded during processing were missed
+            if has_pending:
+                logger.warning(
+                    "🔄 [RACE CONDITION FIX] Detected pending documents that were "
+                    "queued while pipeline was busy. Initiating recursive processing..."
+                )
+                await self.apipeline_process_enqueue_documents(
+                    split_by_character=split_by_character,
+                    split_by_character_only=split_by_character_only,
+                )
+
 
     async def _process_extract_entities(
         self, chunk: dict[str, Any], pipeline_status=None, pipeline_status_lock=None

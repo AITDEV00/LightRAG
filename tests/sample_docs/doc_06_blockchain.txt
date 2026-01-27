@@ -1,0 +1,16 @@
+Blockchain technology underlies cryptocurrencies like Bitcoin and Ethereum but has applications far beyond digital currencies. A blockchain is a decentralized, distributed ledger that records transactions across multiple computers.
+
+Core features of blockchain:
+- Decentralization: No single point of control
+- Immutability: Records cannot be altered after confirmation
+- Transparency: All participants can view the ledger
+- Security: Cryptographic hashing ensures data integrity
+
+Applications beyond cryptocurrency:
+- Supply chain tracking and verification
+- Digital identity management
+- Smart contracts for automated agreements
+- Voting systems with transparent audit trails
+- Healthcare records management
+
+The technology continues to evolve with improvements in scalability, energy efficiency, and interoperability between different blockchain networks.

@@ -1,0 +1,17 @@
+The Internet of Things (IoT) connects billions of devices worldwide, creating smart homes, cities, and industries. IoT devices collect and exchange data, enabling automation and intelligent decision-making.
+
+IoT applications:
+- Smart homes: Thermostats, lighting, security systems
+- Healthcare: Wearable monitors, remote patient monitoring
+- Manufacturing: Predictive maintenance, quality control
+- Transportation: Connected vehicles, traffic management
+- Agriculture: Soil sensors, automated irrigation
+
+Key technologies enabling IoT:
+- Low-power sensors and actuators
+- Wireless protocols: Wi-Fi, Bluetooth, LoRaWAN, 5G
+- Cloud computing for data processing
+- Edge computing for real-time analysis
+- Machine learning for pattern recognition
+
+Security and privacy remain major concerns as more devices become connected, requiring robust encryption and authentication mechanisms.

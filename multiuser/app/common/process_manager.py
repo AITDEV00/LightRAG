@@ -10,6 +10,7 @@ import socket
 import secrets
 import re
 import httpx
+from datetime import datetime
 from typing import Dict, Optional
 
 from app.config.settings import (
@@ -22,6 +23,26 @@ from app.config.settings import (
 )
 from app.features.workspaces.schemas import WorkspaceConfig
 from app.features.workspaces.repository import get_all_workspaces, get_workspace_by_name
+
+
+# Log rotation interval in minutes
+LOG_ROTATION_INTERVAL = 5
+
+
+def get_log_timestamp() -> datetime:
+    """Round current time to nearest LOG_ROTATION_INTERVAL-minute interval."""
+    now = datetime.now()
+    minutes = (now.minute // LOG_ROTATION_INTERVAL) * LOG_ROTATION_INTERVAL
+    return now.replace(minute=minutes, second=0, microsecond=0)
+
+
+def get_log_path(workspace: str) -> str:
+    """Generate timestamped log path for a workspace."""
+    ts = get_log_timestamp()
+    workspace_log_dir = os.path.join(LOG_ROOT, workspace)
+    os.makedirs(workspace_log_dir, exist_ok=True)
+    filename = f"{workspace}_{ts.strftime('%Y-%m-%d_%H-%M')}.log"
+    return os.path.join(workspace_log_dir, filename)
 
 
 def kill_process_on_port(port: int):
@@ -65,6 +86,7 @@ class LightRAGManager:
         self.configs: Dict[str, WorkspaceConfig] = {}
         self.start_times: Dict[str, float] = {}
         self.log_files: Dict[str, any] = {}
+        self.log_paths: Dict[str, str] = {}  # Track current log path per workspace
         self.running = True
 
     async def launch_startup_sequence(self):
@@ -110,7 +132,7 @@ class LightRAGManager:
         cmd = ["lightrag-server", "--port", str(config.port), "--host", "127.0.0.1"]
         
         try:
-            log_path = os.path.join(LOG_ROOT, f"{config.workspace}.log")
+            log_path = get_log_path(config.workspace)
             log_file = open(log_path, "a")
             
             proc = subprocess.Popen(
@@ -124,9 +146,50 @@ class LightRAGManager:
             self.configs[config.workspace] = config
             self.start_times[config.workspace] = time.time()
             self.log_files[config.workspace] = log_file
+            self.log_paths[config.workspace] = log_path
+            
+            print(f"📝 [Logs] {config.workspace} -> {log_path}")
             
         except Exception as e:
             print(f"❌ [Manager] Failed to start {config.workspace}: {e}")
+
+    def rotate_logs(self):
+        """Rotate log files for all running processes to new timestamped files."""
+        for workspace in list(self.processes.keys()):
+            proc = self.processes.get(workspace)
+            if proc is None or proc.poll() is not None:
+                continue  # Process not running
+            
+            new_log_path = get_log_path(workspace)
+            current_log_path = self.log_paths.get(workspace, "")
+            
+            # Only rotate if path has changed (new 5-min interval)
+            if new_log_path != current_log_path:
+                print(f"🔄 [Logs] Rotating {workspace} -> {new_log_path}")
+                
+                try:
+                    old_log_file = self.log_files.get(workspace)
+                    if old_log_file is None:
+                        continue
+                    
+                    # Get the fd that subprocess is writing to
+                    old_fd = old_log_file.fileno()
+                    
+                    # Open new log file
+                    new_log_file = open(new_log_path, "a")
+                    
+                    # Redirect: make old fd point to new file
+                    # This changes where subprocess writes without restarting it
+                    os.dup2(new_log_file.fileno(), old_fd)
+                    
+                    # Close the new file handle (fd is now duplicated to old_fd)
+                    new_log_file.close()
+                    
+                    # Update tracking (old_log_file handle now writes to new file)
+                    self.log_paths[workspace] = new_log_path
+                    
+                except Exception as e:
+                    print(f"⚠️ [Logs] Failed to rotate {workspace}: {e}")
 
     def stop_process(self, workspace: str):
         """Stop a LightRAG worker process."""
@@ -143,6 +206,9 @@ class LightRAGManager:
             if workspace in self.log_files:
                 self.log_files[workspace].close()
                 del self.log_files[workspace]
+            
+            if workspace in self.log_paths:
+                del self.log_paths[workspace]
                 
             if workspace in self.configs:
                 del self.configs[workspace]
@@ -235,3 +301,13 @@ async def watchdog_loop():
     while manager.running:
         await manager.check_health()
         await asyncio.sleep(5)
+
+
+async def log_rotation_loop():
+    """Background task that rotates logs every minute (checks for 5-min interval change)."""
+    await asyncio.sleep(30)  # Initial delay
+    print(f"📝 [LogRotation] Active. Rotating every {LOG_ROTATION_INTERVAL} minutes.")
+    while manager.running:
+        manager.rotate_logs()
+        await asyncio.sleep(60)  # Check every minute
+

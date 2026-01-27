@@ -13,6 +13,7 @@ import os
 import logging
 import logging.config
 import sys
+import asyncio
 import uvicorn
 import pipmaster as pm
 from fastapi.staticfiles import StaticFiles
@@ -360,6 +361,15 @@ def create_app(args):
 
             # Data migration regardless of storage implementation
             await rag.check_and_migrate_data()
+
+            # Using a weak reference to the task in app.state.background_tasks
+            # to keep it alive and prevent early garbage collection
+            processing_task = asyncio.create_task(rag.apipeline_process_enqueue_documents())
+            app.state.background_tasks.add(processing_task)
+            # Remove task from set when completed
+            processing_task.add_done_callback(app.state.background_tasks.discard)
+            
+            logger.info("Initiated background processing of pending documents on startup.")
 
             ASCIIColors.green("\nServer is ready to accept connections! 🚀\n")
 

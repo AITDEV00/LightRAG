@@ -8,7 +8,7 @@ from fastapi import FastAPI
 
 from app.config.settings import args
 from app.common.db import init_db, close_db
-from app.common.process_manager import manager, watchdog_loop
+from app.common.process_manager import manager, watchdog_loop, log_rotation_loop
 
 # Import feature routers
 from app.features.workspaces.create_workspace.endpoint import router as create_workspace_router
@@ -24,12 +24,15 @@ async def lifespan(app: FastAPI):
     # Start loading in background
     startup_task = asyncio.create_task(manager.launch_startup_sequence())
     watchdog_task = asyncio.create_task(watchdog_loop())
+    log_rotation_task = asyncio.create_task(log_rotation_loop())
     yield
     manager.running = False
     startup_task.cancel()
     watchdog_task.cancel()
+    log_rotation_task.cancel()
     manager.stop_all()
     await close_db()
+
 
 
 # Create FastAPI app
