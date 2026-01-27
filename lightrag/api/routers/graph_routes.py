@@ -4,11 +4,25 @@ This module contains all graph-related routes for the LightRAG API.
 
 from typing import Optional, Dict, Any
 import traceback
-from fastapi import APIRouter, Depends, Query, HTTPException
+from fastapi import APIRouter, Depends, Query, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
+
+from lightrag_auto_er.pipeline import run_pipeline
+from lightrag_auto_er.config import settings as er_settings
+import asyncio
 
 from lightrag.utils import logger
 from ..utils_api import get_combined_auth_dependency
+from lightrag.kg.shared_storage import get_namespace_data, get_pipeline_status_lock
+from lightrag.base import BaseKVStorage
+import json
+import os
+from datetime import datetime
+import shutil
+import zipfile
+from fastapi.responses import FileResponse
+
+# ERJobManager moved to er_routes.py
 
 router = APIRouter(tags=["graph"])
 
@@ -89,6 +103,8 @@ class RelationCreateRequest(BaseModel):
 def create_graph_routes(rag, api_key: Optional[str] = None):
     combined_auth = get_combined_auth_dependency(api_key)
 
+    # ER cleanup moved to er_routes module
+
     @router.get("/graph/label/list", dependencies=[Depends(combined_auth)])
     async def get_graph_labels():
         """
@@ -104,6 +120,24 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             logger.error(traceback.format_exc())
             raise HTTPException(
                 status_code=500, detail=f"Error getting graph labels: {str(e)}"
+            )
+
+    @router.get("/graph/entity/list", dependencies=[Depends(combined_auth)])
+    async def get_entities_jyao(
+        limit: int = Query(1000, description="Max number of entities to return", ge=1),
+        offset: int = Query(0, description="Number of entities to skip", ge=0)
+    ):
+        """
+        Get entities with detailed properties (name, type, description, source_id).
+        Supports pagination.
+        """
+        try:
+            return await rag.get_entities_jyao(limit=limit, offset=offset)
+        except Exception as e:
+            logger.error(f"Error getting entities: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=500, detail=f"Error getting entities: {str(e)}"
             )
 
     @router.get("/graph/label/popular", dependencies=[Depends(combined_auth)])
@@ -684,5 +718,7 @@ def create_graph_routes(rag, api_key: Optional[str] = None):
             raise HTTPException(
                 status_code=500, detail=f"Error merging entities: {str(e)}"
             )
+
+        return {"status": "success", "job_id": job_id, "message": "Analysis started"}
 
     return router

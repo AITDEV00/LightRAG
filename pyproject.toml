@@ -22,19 +22,24 @@ classifiers = [
 ]
 dependencies = [
     "aiohttp",
+    "asyncpg>=0.30.0",
     "configparser",
     "google-api-core>=2.0.0,<3.0.0",
     "google-genai>=1.0.0,<2.0.0",
     "json_repair",
+    "langchain-openai>=1.0.3",
+    "lightrag_auto_er",
     "nano-vectordb",
     "networkx",
     "numpy>=1.24.0,<3.0.0",
     "pandas>=2.0.0,<2.4.0",
     "pipmaster",
     "pydantic",
+    "pydantic-settings>=2.12.0",
     "pypinyin",
     "python-dotenv",
     "setuptools",
+    "tabulate>=0.9.0",
     "tenacity",
     "tiktoken",
     "xlsxwriter>=3.1.0",
@@ -185,3 +190,12 @@ python_functions = ["test_*"]
 
 [tool.ruff]
 target-version = "py310"
+
+[tool.uv.workspace]
+members = [
+    "libs/lightrag_auto_er",
+]
+
+[tool.uv.sources]
+# CHANGE THIS LINE: Use 'workspace = true' instead of 'path = ...'
+lightrag-auto-er = { workspace = true }

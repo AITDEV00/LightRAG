@@ -1645,6 +1645,30 @@ class Neo4JStorage(BaseGraphStorage):
             await result.consume()
             return nodes
 
+    async def get_nodes_jyao(self, limit: int = 1000, offset: int = 0) -> list[dict]:
+        """Get nodes with pagination (Custom Implementation)."""
+        workspace_label = self._get_workspace_label()
+        async with self._driver.session(
+            database=self._DATABASE, default_access_mode="READ"
+        ) as session:
+            # query = f"MATCH (n:`{workspace_label}`) RETURN n ORDER BY n.entity_id SKIP $offset LIMIT $limit"
+            query = f"""
+            MATCH (n:`{workspace_label}`)
+            WHERE n.entity_id IS NOT NULL
+            WITH n, n.entity_id AS label
+            ORDER BY label
+            SKIP $offset LIMIT $limit
+            RETURN n;
+            """
+
+            result = await session.run(query, parameters={"offset": offset, "limit": limit})
+            nodes = []
+            async for record in result:
+                node = record["n"]
+                nodes.append(dict(node))
+            await result.consume()
+            return nodes
+
     async def get_all_edges(self) -> list[dict]:
         """Get all edges in the graph.
 

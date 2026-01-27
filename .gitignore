@@ -77,3 +77,8 @@ memory-bank
 
 # Claude Code
 CLAUDE.md
+
+# Multiuser files
+/multiuser/*.db
+/multiuser/__pycache__/
+/multiuser/logs

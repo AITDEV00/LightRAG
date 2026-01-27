@@ -479,6 +479,7 @@ class QdrantVectorDBStorage(BaseVectorStorage):
                             "QDRANT_API_KEY",
                             config.get("qdrant", "apikey", fallback=None),
                         ),
+                        verify=False,
                     )
                     logger.debug(
                         f"[{self.workspace}] QdrantClient created successfully"

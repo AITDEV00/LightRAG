@@ -434,6 +434,9 @@ def parse_args() -> argparse.Namespace:
         "RELATED_CHUNK_NUMBER", DEFAULT_RELATED_CHUNK_NUMBER, int
     )
 
+    # ER Configuration
+    args.er_result_history_len = get_env_value("ER_RESULT_HISTORY_LEN", 3, int)
+
     # Add missing environment variables for health endpoint
     args.force_llm_summary_on_merge = get_env_value(
         "FORCE_LLM_SUMMARY_ON_MERGE", DEFAULT_FORCE_LLM_SUMMARY_ON_MERGE, int

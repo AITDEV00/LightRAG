@@ -472,6 +472,12 @@ class NetworkXStorage(BaseGraphStorage):
         return result
 
     async def get_all_nodes(self) -> list[dict]:
+        graph = await self._get_graph()
+        return [graph.nodes[node] for node in graph.nodes()]
+
+    async def get_nodes_jyao(self, limit: int = 1000, offset: int = 0) -> list[dict]:
+        all_nodes = await self.get_all_nodes()
+        return all_nodes[offset : offset + limit]
         """Get all nodes in the graph.
 
         Returns:
