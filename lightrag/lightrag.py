@@ -2729,25 +2729,21 @@ class LightRAG:
             if not q:
                 return "mix"
 
-            def has_word(phrase: str) -> bool:
-                return re.search(rf"\\b{re.escape(phrase)}\\b", q) is not None
-
+            # bypass: general knowledge questions
             if any(phrase in q for phrase in ("difference between", "define ", "explain ", "what is ", "what does ")):
                 return "bypass"
+            # hybrid: compare/relate specific entities
             if any(phrase in q for phrase in ("compare", "relate", "relation", "relationship", "similarities", "connects", "connection")):
                 return "hybrid"
-            if any(phrase in q for phrase in ("comprehensive", "overview", "map out", "ecosystem", "interconnected", "complete picture", "across all entities")):
-                return "mix"
+            # global: cross-entity patterns
             if any(phrase in q for phrase in ("common ", "patterns", "which entities", "which organizations", "leading in", "how do different", "across multiple", "across organizations", "across entities")):
                 return "global"
-            if re.search(
-                r"\bhow many\b|\bwhat percentage\b|\bwhat percent\b|\bscore\b|\brate\b|\bnumber\b|\bcount\b",
-                q,
-            ):
+            # naive: ONLY for explicit document/source lookup
+            if any(phrase in q for phrase in ("which document", "what document", "which source", "what source", "show me the citation", "mentioned in the document", "in the documents", "in the report")):
                 return "naive"
-            if any(phrase in q for phrase in ("mentioned in the documents", "in the documents", "in the report")):
-                return "naive"
-            return "local"
+            # mix: factual questions with metrics/numbers (most comprehensive)
+            # This combines entity + relationship + chunk context
+            return "mix"
 
         default_mode = "mix"
         response_text = ""

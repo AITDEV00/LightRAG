@@ -97,6 +97,27 @@ export const ChatMessage = ({
     loadKaTeX();
   }, []);
 
+  // Create a mapping from original reference_id to sequential display number (1, 2, 3...)
+  // This makes citations more readable for users
+  const { refIdToDisplayNum, displayNumToRef } = useMemo(() => {
+    const refs = message.references || []
+    const idToNum: Record<string, number> = {}
+    const numToRef: Record<number, Reference> = {}
+    
+    // Sort references by their original reference_id to maintain consistent ordering
+    const sortedRefs = [...refs].sort((a, b) => 
+      parseInt(a.reference_id) - parseInt(b.reference_id)
+    )
+    
+    sortedRefs.forEach((ref, index) => {
+      const displayNum = index + 1
+      idToNum[ref.reference_id] = displayNum
+      numToRef[displayNum] = ref
+    })
+    
+    return { refIdToDisplayNum: idToNum, displayNumToRef: numToRef }
+  }, [message.references])
+
   // Helper function to render reference with hover tooltip
   const ReferenceLink = ({ refId, references }: { refId: string; references?: Reference[] }) => {
     if (!references || references.length === 0) {
@@ -108,20 +129,36 @@ export const ChatMessage = ({
       return <sup className="text-blue-600 dark:text-blue-400 font-bold">[{refId}]</sup>
     }
 
+    // Get the display number for this reference (1, 2, 3 instead of 15, 16, etc.)
+    const displayNum = refIdToDisplayNum[refId] || refId
+
+    // Build preview content - prefer chunk content, fallback to entity info
     const chunkContent = reference.content?.join('\n\n') || ''
-    const previewLength = 300
-    const preview = chunkContent
-      ? (chunkContent.length > previewLength
+    const previewLength = 400
+    
+    let preview = ''
+    let entityInfo = ''
+    
+    if (chunkContent) {
+      preview = chunkContent.length > previewLength
         ? chunkContent.substring(0, previewLength) + '...'
-        : chunkContent)
-      : 'No preview available'
+        : chunkContent
+    } else if (reference.entities && reference.entities.length > 0) {
+      // Show entity information when no chunk content
+      entityInfo = reference.entities.map(e => 
+        `**${e.entity_name}** (${e.entity_type})${e.description ? `: ${e.description.substring(0, 200)}${e.description.length > 200 ? '...' : ''}` : ''}`
+      ).join('\n\n')
+      preview = entityInfo || 'No preview available'
+    } else {
+      preview = 'No preview available'
+    }
 
     return (
       <TooltipProvider delayDuration={200}>
         <Tooltip>
           <TooltipTrigger asChild>
             <sup className="text-blue-600 dark:text-blue-400 font-bold cursor-help hover:underline hover:text-blue-800 dark:hover:text-blue-300">
-              [{refId}]
+              [{displayNum}]
             </sup>
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-md">

@@ -122,7 +122,7 @@ const useSettingsStoreBase = create<SettingsState>()(
       userPromptHistory: [],
 
       querySettings: {
-        mode: 'global',
+        mode: 'auto',
         response_type: 'Multiple Paragraphs',
         top_k: 40,
         chunk_top_k: 20,
@@ -134,7 +134,9 @@ const useSettingsStoreBase = create<SettingsState>()(
         stream: true,
         history_turns: 0,
         user_prompt: '',
-        enable_rerank: true
+        enable_rerank: true,
+        include_references: true,
+        include_chunk_content: true
       },
 
       setTheme: (theme: Theme) => set({ theme }),

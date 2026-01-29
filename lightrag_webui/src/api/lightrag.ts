@@ -137,6 +137,8 @@ export type QueryRequest = {
   user_prompt?: string
   /** Enable reranking for retrieved text chunks. If True but no rerank model is configured, a warning will be issued. Default is True. */
   enable_rerank?: boolean
+  /** Include references in the response for citation purposes. Default is True. */
+  include_references?: boolean
   /** Include chunk content in references for display and citation purposes. Default is False. */
   include_chunk_content?: boolean
   /** If True, return only a list of source file paths without LLM generation. */

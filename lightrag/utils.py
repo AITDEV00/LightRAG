@@ -2854,28 +2854,28 @@ def convert_to_user_format(
 
         if original_entity:
             # Use original database data
-            formatted_entities.append(
-                {
-                    "entity_name": original_entity.get("entity_name", entity_name),
-                    "entity_type": original_entity.get("entity_type", "UNKNOWN"),
-                    "description": original_entity.get("description", ""),
-                    "source_id": original_entity.get("source_id", ""),
-                    "file_path": original_entity.get("file_path", "unknown_source"),
-                    "created_at": original_entity.get("created_at", ""),
-                }
-            )
+            entity_data = {
+                "entity_name": original_entity.get("entity_name", entity_name),
+                "entity_type": original_entity.get("entity_type", "UNKNOWN"),
+                "description": original_entity.get("description", ""),
+                "source_id": original_entity.get("source_id", ""),
+                "file_path": original_entity.get("file_path", "unknown_source"),
+                "created_at": original_entity.get("created_at", ""),
+            }
         else:
             # Fallback to LLM context data (for backward compatibility)
-            formatted_entities.append(
-                {
-                    "entity_name": entity_name,
-                    "entity_type": entity.get("type", "UNKNOWN"),
-                    "description": entity.get("description", ""),
-                    "source_id": entity.get("source_id", ""),
-                    "file_path": entity.get("file_path", "unknown_source"),
-                    "created_at": entity.get("created_at", ""),
-                }
-            )
+            entity_data = {
+                "entity_name": entity_name,
+                "entity_type": entity.get("type", "UNKNOWN"),
+                "description": entity.get("description", ""),
+                "source_id": entity.get("source_id", ""),
+                "file_path": entity.get("file_path", "unknown_source"),
+                "created_at": entity.get("created_at", ""),
+            }
+        # Include reference_ids if present (added in _build_context_str)
+        if "reference_ids" in entity:
+            entity_data["reference_ids"] = entity["reference_ids"]
+        formatted_entities.append(entity_data)
 
     # Convert relationships format using original data when available
     formatted_relationships = []
@@ -2891,32 +2891,32 @@ def convert_to_user_format(
 
         if original_relation:
             # Use original database data
-            formatted_relationships.append(
-                {
-                    "src_id": original_relation.get("src_id", entity1),
-                    "tgt_id": original_relation.get("tgt_id", entity2),
-                    "description": original_relation.get("description", ""),
-                    "keywords": original_relation.get("keywords", ""),
-                    "weight": original_relation.get("weight", 1.0),
-                    "source_id": original_relation.get("source_id", ""),
-                    "file_path": original_relation.get("file_path", "unknown_source"),
-                    "created_at": original_relation.get("created_at", ""),
-                }
-            )
+            relation_data = {
+                "src_id": original_relation.get("src_id", entity1),
+                "tgt_id": original_relation.get("tgt_id", entity2),
+                "description": original_relation.get("description", ""),
+                "keywords": original_relation.get("keywords", ""),
+                "weight": original_relation.get("weight", 1.0),
+                "source_id": original_relation.get("source_id", ""),
+                "file_path": original_relation.get("file_path", "unknown_source"),
+                "created_at": original_relation.get("created_at", ""),
+            }
         else:
             # Fallback to LLM context data (for backward compatibility)
-            formatted_relationships.append(
-                {
-                    "src_id": entity1,
-                    "tgt_id": entity2,
-                    "description": relation.get("description", ""),
-                    "keywords": relation.get("keywords", ""),
-                    "weight": relation.get("weight", 1.0),
-                    "source_id": relation.get("source_id", ""),
-                    "file_path": relation.get("file_path", "unknown_source"),
-                    "created_at": relation.get("created_at", ""),
-                }
-            )
+            relation_data = {
+                "src_id": entity1,
+                "tgt_id": entity2,
+                "description": relation.get("description", ""),
+                "keywords": relation.get("keywords", ""),
+                "weight": relation.get("weight", 1.0),
+                "source_id": relation.get("source_id", ""),
+                "file_path": relation.get("file_path", "unknown_source"),
+                "created_at": relation.get("created_at", ""),
+            }
+        # Include reference_ids if present (added in _build_context_str)
+        if "reference_ids" in relation:
+            relation_data["reference_ids"] = relation["reference_ids"]
+        formatted_relationships.append(relation_data)
 
     # Convert chunks format (chunks already contain complete data)
     formatted_chunks = []

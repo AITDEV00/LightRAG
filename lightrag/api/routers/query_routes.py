@@ -153,6 +153,14 @@ class QueryRequest(BaseModel):
         return param
 
 
+class EntityInfo(BaseModel):
+    """Entity information for reference hover display."""
+    
+    entity_name: str = Field(description="Name of the entity")
+    entity_type: str = Field(description="Type/category of the entity")
+    description: str = Field(default="", description="Description of the entity")
+
+
 class ReferenceItem(BaseModel):
     """A single reference item in query responses."""
 
@@ -161,6 +169,10 @@ class ReferenceItem(BaseModel):
     content: Optional[List[str]] = Field(
         default=None,
         description="List of chunk contents from this file (only present when include_chunk_content=True)",
+    )
+    entities: Optional[List[EntityInfo]] = Field(
+        default=None,
+        description="List of entities associated with this reference (for hover display)",
     )
 
 
@@ -449,6 +461,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 references = data.get("references", [])
                 if request.include_references and request.include_chunk_content:
                     chunks = data.get("chunks", [])
+                    entities = data.get("entities", [])
+                    
                     ref_id_to_content = {}
                     for chunk in chunks:
                         ref_id = chunk.get("reference_id", "")
@@ -456,12 +470,27 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                         if ref_id and content:
                             ref_id_to_content.setdefault(ref_id, []).append(content)
 
+                    # Create a mapping from reference_id to entities
+                    ref_id_to_entities = {}
+                    for entity in entities:
+                        ref_ids = entity.get("reference_ids", [])
+                        for ref_id in ref_ids:
+                            if ref_id:
+                                entity_info = {
+                                    "entity_name": entity.get("entity_name", ""),
+                                    "entity_type": entity.get("entity_type", ""),
+                                    "description": entity.get("description", "")
+                                }
+                                ref_id_to_entities.setdefault(ref_id, []).append(entity_info)
+
                     enriched_references = []
                     for ref in references:
                         ref_copy = ref.copy()
                         ref_id = ref.get("reference_id", "")
                         if ref_id in ref_id_to_content:
                             ref_copy["content"] = ref_id_to_content[ref_id]
+                        if ref_id in ref_id_to_entities:
+                            ref_copy["entities"] = ref_id_to_entities[ref_id]
                         enriched_references.append(ref_copy)
                     references = enriched_references
                 return QueryResponse(
@@ -483,26 +512,41 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             if not response_content:
                 response_content = "No relevant context found for the query."
 
-            # Enrich references with chunk content if requested
+            # Enrich references with chunk content and entity info if requested
             if request.include_references and request.include_chunk_content:
                 chunks = data.get("chunks", [])
+                entities = data.get("entities", [])
+                
                 # Create a mapping from reference_id to chunk content
                 ref_id_to_content = {}
                 for chunk in chunks:
                     ref_id = chunk.get("reference_id", "")
                     content = chunk.get("content", "")
                     if ref_id and content:
-                        # Collect chunk content; join later to avoid quadratic string concatenation
                         ref_id_to_content.setdefault(ref_id, []).append(content)
 
-                # Add content to references
+                # Create a mapping from reference_id to entities
+                ref_id_to_entities = {}
+                for entity in entities:
+                    ref_ids = entity.get("reference_ids", [])
+                    for ref_id in ref_ids:
+                        if ref_id:
+                            entity_info = {
+                                "entity_name": entity.get("entity_name", ""),
+                                "entity_type": entity.get("entity_type", ""),
+                                "description": entity.get("description", "")
+                            }
+                            ref_id_to_entities.setdefault(ref_id, []).append(entity_info)
+                
+                # Add content and entities to references
                 enriched_references = []
                 for ref in references:
                     ref_copy = ref.copy()
                     ref_id = ref.get("reference_id", "")
                     if ref_id in ref_id_to_content:
-                        # Keep content as a list of chunks (one file may have multiple chunks)
                         ref_copy["content"] = ref_id_to_content[ref_id]
+                    if ref_id in ref_id_to_entities:
+                        ref_copy["entities"] = ref_id_to_entities[ref_id]
                     enriched_references.append(ref_copy)
                 references = enriched_references
 
@@ -738,27 +782,42 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                 references = result.get("data", {}).get("references", [])
                 llm_response = result.get("llm_response", {})
 
-                # Enrich references with chunk content if requested
+                # Enrich references with chunk content and entity info if requested
                 if request.include_references and request.include_chunk_content:
                     data = result.get("data", {})
                     chunks = data.get("chunks", [])
+                    entities = data.get("entities", [])
+                    
                     # Create a mapping from reference_id to chunk content
                     ref_id_to_content = {}
                     for chunk in chunks:
                         ref_id = chunk.get("reference_id", "")
                         content = chunk.get("content", "")
                         if ref_id and content:
-                            # Collect chunk content
                             ref_id_to_content.setdefault(ref_id, []).append(content)
 
-                    # Add content to references
+                    # Create a mapping from reference_id to entities
+                    ref_id_to_entities = {}
+                    for entity in entities:
+                        ref_ids = entity.get("reference_ids", [])
+                        for ref_id in ref_ids:
+                            if ref_id:
+                                entity_info = {
+                                    "entity_name": entity.get("entity_name", ""),
+                                    "entity_type": entity.get("entity_type", ""),
+                                    "description": entity.get("description", "")
+                                }
+                                ref_id_to_entities.setdefault(ref_id, []).append(entity_info)
+
+                    # Add content and entities to references
                     enriched_references = []
                     for ref in references:
                         ref_copy = ref.copy()
                         ref_id = ref.get("reference_id", "")
                         if ref_id in ref_id_to_content:
-                            # Keep content as a list of chunks (one file may have multiple chunks)
                             ref_copy["content"] = ref_id_to_content[ref_id]
+                        if ref_id in ref_id_to_entities:
+                            ref_copy["entities"] = ref_id_to_entities[ref_id]
                         enriched_references.append(ref_copy)
                     references = enriched_references
 

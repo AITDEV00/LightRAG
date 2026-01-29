@@ -3671,10 +3671,19 @@ async def _apply_token_truncation(
     )
 
     # Apply token-based truncation
+    # Store original file_path and created_at for later restoration
+    entity_metadata = {}  # entity_name -> {file_path, created_at}
+    relation_metadata = {}  # (entity1, entity2) -> {file_path, created_at}
+
     if entities_context:
-        # Remove file_path and created_at for token calculation
+        # Remove file_path and created_at for token calculation, but store them
         entities_context_for_truncation = []
         for entity in entities_context:
+            entity_name = entity.get("entity", "")
+            entity_metadata[entity_name] = {
+                "file_path": entity.get("file_path", ""),
+                "created_at": entity.get("created_at", ""),
+            }
             entity_copy = entity.copy()
             entity_copy.pop("file_path", None)
             entity_copy.pop("created_at", None)
@@ -3689,10 +3698,22 @@ async def _apply_token_truncation(
             tokenizer=tokenizer,
         )
 
+        # Restore file_path and created_at to truncated entities
+        for entity in entities_context:
+            entity_name = entity.get("entity", "")
+            if entity_name in entity_metadata:
+                entity["file_path"] = entity_metadata[entity_name]["file_path"]
+                entity["created_at"] = entity_metadata[entity_name]["created_at"]
+
     if relations_context:
-        # Remove file_path and created_at for token calculation
+        # Remove file_path and created_at for token calculation, but store them
         relations_context_for_truncation = []
         for relation in relations_context:
+            rel_key = (relation.get("entity1", ""), relation.get("entity2", ""))
+            relation_metadata[rel_key] = {
+                "file_path": relation.get("file_path", ""),
+                "created_at": relation.get("created_at", ""),
+            }
             relation_copy = relation.copy()
             relation_copy.pop("file_path", None)
             relation_copy.pop("created_at", None)
@@ -3706,6 +3727,13 @@ async def _apply_token_truncation(
             max_token_size=max_relation_tokens,
             tokenizer=tokenizer,
         )
+
+        # Restore file_path and created_at to truncated relations
+        for relation in relations_context:
+            rel_key = (relation.get("entity1", ""), relation.get("entity2", ""))
+            if rel_key in relation_metadata:
+                relation["file_path"] = relation_metadata[rel_key]["file_path"]
+                relation["created_at"] = relation_metadata[rel_key]["created_at"]
 
     logger.info(
         f"After truncation: {len(entities_context)} entities, {len(relations_context)} relations"
@@ -4060,17 +4088,16 @@ async def _build_context_str(
         else "Multiple Paragraphs"
     )
 
-    entities_str = "\n".join(
+    # Calculate preliminary kg context tokens (before adding reference_ids to entities/relations)
+    pre_entities_str = "\n".join(
         json.dumps(entity, ensure_ascii=False) for entity in entities_context
     )
-    relations_str = "\n".join(
+    pre_relations_str = "\n".join(
         json.dumps(relation, ensure_ascii=False) for relation in relations_context
     )
-
-    # Calculate preliminary kg context tokens
     pre_kg_context = kg_context_template.format(
-        entities_str=entities_str,
-        relations_str=relations_str,
+        entities_str=pre_entities_str,
+        relations_str=pre_relations_str,
         text_chunks_str="",
         reference_list_str="",
     )
@@ -4115,6 +4142,47 @@ async def _build_context_str(
     )
     reference_list = _merge_reference_list_with_context_paths(
         reference_list, original_entities_context, original_relations_context
+    )
+
+    # Build file_path to reference_id mapping for entities and relations
+    file_path_to_ref_id = {}
+    for ref in reference_list:
+        fp = ref.get("file_path", "")
+        ref_id = ref.get("reference_id", "")
+        if fp and ref_id:
+            file_path_to_ref_id[fp] = ref_id
+
+    # Add reference_ids to entities_context based on their file_path
+    for entity in entities_context:
+        entity_file_path = entity.get("file_path", "")
+        if entity_file_path:
+            # Handle multiple file paths separated by <SEP>
+            paths = split_string_by_multi_markers(entity_file_path, [GRAPH_FIELD_SEP])
+            ref_ids = []
+            for p in paths:
+                if p in file_path_to_ref_id:
+                    ref_ids.append(file_path_to_ref_id[p])
+            if ref_ids:
+                entity["reference_ids"] = ref_ids
+
+    # Add reference_ids to relations_context based on their file_path
+    for relation in relations_context:
+        relation_file_path = relation.get("file_path", "")
+        if relation_file_path:
+            paths = split_string_by_multi_markers(relation_file_path, [GRAPH_FIELD_SEP])
+            ref_ids = []
+            for p in paths:
+                if p in file_path_to_ref_id:
+                    ref_ids.append(file_path_to_ref_id[p])
+            if ref_ids:
+                relation["reference_ids"] = ref_ids
+
+    # Rebuild entities_str and relations_str with reference_ids
+    entities_str = "\n".join(
+        json.dumps(entity, ensure_ascii=False) for entity in entities_context
+    )
+    relations_str = "\n".join(
+        json.dumps(relation, ensure_ascii=False) for relation in relations_context
     )
 
     # Rebuild chunks_context with truncated chunks

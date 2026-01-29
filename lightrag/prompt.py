@@ -225,10 +225,12 @@ Consider the conversation history if provided to maintain conversational flow an
 
 1. Step-by-Step Instruction:
   - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
-  - Scrutinize both `Knowledge Graph Data` and `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
+  - Scrutinize both `Knowledge Graph Data` (entities and relationships) and `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
-  - Track the reference_id of the document chunk which directly support the facts presented in the response.
-  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is the numeric reference_id (for example: [1]). Use only reference_id values that appear in the `Reference Document List` and do not include any extra text like "reference_id:".
+  - Track the reference_id for citing sources:
+    * For information from `Document Chunks`: use the `reference_id` field of the chunk.
+    * For information from `Knowledge Graph Data` (entities/relationships): use the first value from the `reference_ids` array.
+  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is one of the reference_ids from the context (for example: [1], [2]). ONLY use reference_id values that exist in the `Reference Document List`. Do NOT invent new reference numbers.
   - Generate a references section at the end of the response. Each reference document must directly support the facts presented in the response.
   - Do not generate anything after the reference section.
 
@@ -243,11 +245,12 @@ Consider the conversation history if provided to maintain conversational flow an
 
 4. References Section Format:
   - The References section should be under heading: `### References`
-  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
-  - The Document Title in the citation must retain its original language.
-  - Output each citation on an individual line
-  - Provide maximum of 5 most relevant citations.
-  - Do not generate footnotes section or any comment, summary, or explanation after the references.
+  - CRITICAL: Use the EXACT same reference numbers `[n]` that you used for inline citations. Do NOT renumber or reassign them.
+  - For each cited reference, copy the EXACT file path from the `Reference Document List` that matches the reference_id.
+  - Format: `* [n] <exact file_path from Reference Document List>`
+  - Output each cited reference on its own line.
+  - Only list references that were actually cited inline (maximum 5).
+  - Do not generate footnotes, comments, or explanations after the references.
 5. Additional Instructions: {user_prompt}
 
 
@@ -288,11 +291,12 @@ Consider the conversation history if provided to maintain conversational flow an
 
 4. References Section Format:
   - The References section should be under heading: `### References`
-  - Reference list entries should adhere to the format: `* [n] Document Title`. Do not include a caret (`^`) after opening square bracket (`[`).
-  - The Document Title in the citation must retain its original language.
-  - Output each citation on an individual line
-  - Provide maximum of 5 most relevant citations.
-  - Do not generate footnotes section or any comment, summary, or explanation after the references.
+  - CRITICAL: Use the EXACT same reference numbers `[n]` that you used for inline citations. Do NOT renumber or reassign them.
+  - For each cited reference, copy the EXACT file path from the `Reference Document List` that matches the reference_id.
+  - Format: `* [n] <exact file_path from Reference Document List>`
+  - Output each cited reference on its own line.
+  - Only list references that were actually cited inline (maximum 5).
+  - Do not generate footnotes, comments, or explanations after the references.
 5. Additional Instructions: {user_prompt}
 
 
@@ -302,25 +306,25 @@ Consider the conversation history if provided to maintain conversational flow an
 """
 
 PROMPTS["kg_query_context"] = """
-Knowledge Graph Data (Entity):
+Knowledge Graph Data (Entity) - each entry may have a `reference_ids` array for citation:
 
 ```json
 {entities_str}
 ```
 
-Knowledge Graph Data (Relationship):
+Knowledge Graph Data (Relationship) - each entry may have a `reference_ids` array for citation:
 
 ```json
 {relations_str}
 ```
 
-Document Chunks (Each entry has a reference_id refer to the `Reference Document List`):
+Document Chunks (Each entry has a `reference_id` for citation):
 
 ```json
 {text_chunks_str}
 ```
 
-Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
+Reference Document List (Use these reference_ids [n] for inline citations):
 
 ```
 {reference_list_str}
@@ -409,20 +413,22 @@ You are a query router for a Retrieval-Augmented Generation system.
 Select the single best retrieval mode for the given user query.
 
 ---Valid Modes---
-- naive: direct factual lookup from document chunks
-- local: entity-focused questions about a specific organization/entity
-- global: cross-entity relationships and patterns
-- hybrid: compare or relate specific entities
-- mix: broad, comprehensive, multi-entity analysis
-- bypass: general knowledge unrelated to the document corpus
+- mix: factual questions about metrics/numbers for a specific entity (PREFERRED for most factual questions)
+- local: questions about an entity's general description, background, or non-numeric attributes
+- global: cross-entity patterns, trends, or relationship analysis
+- hybrid: compare or relate two or more specific entities
+- naive: ONLY when user explicitly asks "which document", "what source", "show me the citation"
+- bypass: general knowledge questions unrelated to the document corpus
 
 ---Rules---
 1. Choose exactly one mode.
 2. Output JSON only, no extra text.
 3. Use this schema:
 {"mode": "<mode>", "confidence": 0.0, "reason": "<short reason>"}
-4. If the user asks which document/source mentions qsomething, or asks for citations/sources, choose "naive".
-5. If the user asks for a definition or general explanation (e.g., "define", "what is", "explain") and does not mention documents/sources/citations, choose "bypass".
+4. For factual questions asking for specific metrics, numbers, percentages, scores, rates, or counts about an entity, use "mix".
+5. Use "naive" ONLY when user explicitly asks about document sources/citations.
+6. For definitions or general explanations without document reference, use "bypass".
+7. When unsure, prefer "mix" as it is the most comprehensive.
 
 ---Query---
 {query}
