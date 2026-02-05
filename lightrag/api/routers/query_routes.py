@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ascii_colors import trace_exception
 
+
 router = APIRouter(tags=["query"])
 
 
@@ -162,10 +163,16 @@ class EntityInfo(BaseModel):
 
 
 class ReferenceItem(BaseModel):
+
     """A single reference item in query responses."""
+
 
     reference_id: str = Field(description="Unique reference identifier")
     file_path: str = Field(description="Path to the source file")
+    chunk_id: Optional[str] = Field(
+        default=None,
+        description="Unique identifier for the specific chunk",
+    )
     content: Optional[List[str]] = Field(
         default=None,
         description="List of chunk contents from this file (only present when include_chunk_content=True)",
@@ -493,6 +500,9 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             ref_copy["entities"] = ref_id_to_entities[ref_id]
                         enriched_references.append(ref_copy)
                     references = enriched_references
+
+
+
                 return QueryResponse(
                     response=f"Found {len(files)} documents.",
                     files=files,
@@ -538,17 +548,35 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                             }
                             ref_id_to_entities.setdefault(ref_id, []).append(entity_info)
                 
+                # Create a mapping from reference_id to image descriptions
+                images = data.get("images", [])
+                ref_id_to_image_content = {}
+                for image in images:
+                    ref_id = image.get("reference_id", "")
+                    content = image.get("content", "")
+                    if ref_id and content:
+                        ref_id_to_image_content[ref_id] = content
+                
                 # Add content and entities to references
                 enriched_references = []
                 for ref in references:
                     ref_copy = ref.copy()
                     ref_id = ref.get("reference_id", "")
+                    
+                    # Add chunk content if available (already a list)
                     if ref_id in ref_id_to_content:
                         ref_copy["content"] = ref_id_to_content[ref_id]
+                    # Add image description if available (wrap in list)
+                    elif ref_id in ref_id_to_image_content:
+                        ref_copy["content"] = [ref_id_to_image_content[ref_id]]
+                    
+                    # Add entities if available
                     if ref_id in ref_id_to_entities:
                         ref_copy["entities"] = ref_id_to_entities[ref_id]
                     enriched_references.append(ref_copy)
                 references = enriched_references
+
+
 
             # Return response with or without references based on request
             if request.include_references:
@@ -809,17 +837,35 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 }
                                 ref_id_to_entities.setdefault(ref_id, []).append(entity_info)
 
+                    # Create a mapping from reference_id to image descriptions
+                    images = data.get("images", [])
+                    ref_id_to_image_content = {}
+                    for image in images:
+                        ref_id = image.get("reference_id", "")
+                        content = image.get("content", "")
+                        if ref_id and content:
+                            ref_id_to_image_content[ref_id] = content
+
                     # Add content and entities to references
                     enriched_references = []
                     for ref in references:
                         ref_copy = ref.copy()
                         ref_id = ref.get("reference_id", "")
+                        
+                        # Add chunk content if available (already a list)
                         if ref_id in ref_id_to_content:
                             ref_copy["content"] = ref_id_to_content[ref_id]
+                        # Add image description if available (wrap in list)
+                        elif ref_id in ref_id_to_image_content:
+                            ref_copy["content"] = [ref_id_to_image_content[ref_id]]
+                        
+                        # Add entities if available
                         if ref_id in ref_id_to_entities:
                             ref_copy["entities"] = ref_id_to_entities[ref_id]
                         enriched_references.append(ref_copy)
                     references = enriched_references
+                
+
 
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks
@@ -1267,6 +1313,8 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             # aquery_data returns the new format with status, message, data, and metadata
             if isinstance(response, dict):
+
+
                 return QueryDataResponse(**response)
             else:
                 # Handle unexpected response format

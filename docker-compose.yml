@@ -10,7 +10,7 @@ services:
     # ports:
     #   - "${PORT:-9621}:9621"
     ports:
-      - "8125:8000"
+      - "8126:8000"
     volumes:
       # - ./data/rag_storage:/app/data/rag_storage
       # - ./data/inputs:/app/data/inputs

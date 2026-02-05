@@ -230,9 +230,10 @@ Consider the conversation history if provided to maintain conversational flow an
   - Track the reference_id for citing sources:
     * For information from `Document Chunks`: use the `reference_id` field of the chunk.
     * For information from `Knowledge Graph Data` (entities/relationships): use the first value from the `reference_ids` array.
-  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is one of the reference_ids from the context (for example: [1], [2]). ONLY use reference_id values that exist in the `Reference Document List`. Do NOT invent new reference numbers.
-  - Generate a references section at the end of the response. Each reference document must directly support the facts presented in the response.
-  - Do not generate anything after the reference section.
+    * For information from images (charts, diagrams, screenshots, image descriptions): use the image's own `reference_id` from the Reference List, NOT the parent document's reference_id.
+  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is one of the reference_ids from the context (for example: [1], [2]). ONLY use reference_id values that exist in the `Reference List`. Do NOT invent new reference numbers.
+  - Do NOT generate a "References" section at the end. The inline citations [n] are sufficient.
+  - If multiple chunks from the same document are listed (e.g., [1], [2]), cite the SPECIFIC chunk ID that contains the information used. Do not default to the first ID [1] for all information from a file.
 
 2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
@@ -243,14 +244,14 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
 
-4. References Section Format:
-  - The References section should be under heading: `### References`
-  - CRITICAL: Use the EXACT same reference numbers `[n]` that you used for inline citations. Do NOT renumber or reassign them.
-  - For each cited reference, copy the EXACT file path from the `Reference Document List` that matches the reference_id.
-  - Format: `* [n] <exact file_path from Reference Document List>`
-  - Output each cited reference on its own line.
-  - Only list references that were actually cited inline (maximum 5).
-  - Do not generate footnotes, comments, or explanations after the references.
+
+4. Image Citations:
+  - Images (charts, diagrams, screenshots, image descriptions) have separate reference IDs from their parent documents in the "Reference List".
+  - CRITICAL: When discussing information DERIVED FROM an image (e.g., data from a chart, details from a diagram), you MUST cite the image's reference_id, NOT the document containing it.
+    * Example: If a document [1] contains text with an embedded chart [5], and you're discussing chart data, cite [5].
+  - When mentioning an image, use the format: "See [n]" or "As shown in [n]".
+  - Do NOT use markdown links `![...](...)` if a reference ID is available.
+
 5. Additional Instructions: {user_prompt}
 
 
@@ -276,9 +277,10 @@ Consider the conversation history if provided to maintain conversational flow an
   - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Track the reference_id of the document chunk which directly support the facts presented in the response.
-  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is the numeric reference_id (for example: [1]). Use only reference_id values that appear in the `Reference Document List` and do not include any extra text like "reference_id:".
-  - Generate a **References** section at the end of the response. Each reference document must directly support the facts presented in the response.
-  - Do not generate anything after the reference section.
+    * For information from images (charts, diagrams, screenshots, image descriptions): use the image's own `reference_id`, NOT the parent document's reference_id.
+  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is the numeric reference_id (for example: [1]). Use only reference_id values that appear in the `Reference List` and do not include any extra text like "reference_id:".
+  - Do NOT generate a "References" section at the end. The inline citations [n] are sufficient.
+  - If multiple chunks from the same document are listed (e.g., [1], [2]), cite the SPECIFIC chunk ID that contains the information used. Do not default to the first ID [1] for all information from a file.
 
 2. Content & Grounding:
   - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
@@ -289,14 +291,12 @@ Consider the conversation history if provided to maintain conversational flow an
   - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
   - The response should be presented in {response_type}.
 
-4. References Section Format:
-  - The References section should be under heading: `### References`
-  - CRITICAL: Use the EXACT same reference numbers `[n]` that you used for inline citations. Do NOT renumber or reassign them.
-  - For each cited reference, copy the EXACT file path from the `Reference Document List` that matches the reference_id.
-  - Format: `* [n] <exact file_path from Reference Document List>`
-  - Output each cited reference on its own line.
-  - Only list references that were actually cited inline (maximum 5).
-  - Do not generate footnotes, comments, or explanations after the references.
+
+4. Image Citations:
+  - Images (charts, diagrams, screenshots, image descriptions) have separate reference IDs from their parent documents in the \"Reference List\".\n  - CRITICAL: When discussing information DERIVED FROM an image (e.g., data from a chart, details from a diagram), you MUST cite the image's reference_id, NOT the document containing it.
+    * Example: If a document [1] contains text with an embedded chart [5], and you're discussing chart data, cite [5].
+  - When mentioning an image, use the format: \"See [n]\" or \"As shown in [n]\".\n  - Do NOT use markdown links `![...](...)` if a reference ID is available.
+
 5. Additional Instructions: {user_prompt}
 
 
@@ -324,7 +324,7 @@ Document Chunks (Each entry has a `reference_id` for citation):
 {text_chunks_str}
 ```
 
-Reference Document List (Use these reference_ids [n] for inline citations):
+Reference List (Use these reference_ids [n] for inline citations):
 
 ```
 {reference_list_str}
@@ -333,13 +333,13 @@ Reference Document List (Use these reference_ids [n] for inline citations):
 """
 
 PROMPTS["naive_query_context"] = """
-Document Chunks (Each entry has a reference_id refer to the `Reference Document List`):
+Document Chunks (Each entry has a reference_id refer to the `Reference List`):
 
 ```json
 {text_chunks_str}
 ```
 
-Reference Document List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
+Reference List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
 
 ```
 {reference_list_str}

@@ -3958,6 +3958,115 @@ def _merge_reference_list_with_context_paths(
     return reference_list
 
 
+
+def _extract_images_from_chunks(chunks: list[dict], reference_list: list[dict]) -> list[dict]:
+    """
+    Extracts markdown images from chunks and adds them to reference_list.
+    Also REMOVES the image markdown and descriptions from chunk content to prevent duplication.
+    Returns the updated reference_list with new entries having a 'reference_id'.
+    """
+    if not chunks:
+        return reference_list
+
+    # Start ID counter based on existing references
+    # Parse existing IDs to find the max
+    max_id = 0
+    existing_ids = set()
+    for ref in reference_list:
+        rid = ref.get("reference_id")
+        if rid and rid.isdigit():
+            val = int(rid)
+            max_id = max(max_id, val)
+            existing_ids.add(val)
+    
+    next_id = max_id + 1
+    
+    # Track seen images to avoid duplicates (deduplication by file_path)
+    seen_images = {ref["file_path"] for ref in reference_list if ref.get("file_path")}
+    
+    # Regex for images: ![alt](path)
+    image_pattern = re.compile(r'!\[(.*?)\]\((.*?)\)')
+    
+    # Regex for consecutive blockquote lines (can be multi-line)
+    blockquote_pattern = re.compile(r'^\>\s*(.+)$', re.MULTILINE)
+    
+    for chunk in chunks:
+        content = chunk.get("content", "")
+        chunk_id = chunk.get("chunk_id", "")
+        original_content = content
+        
+        # Find all images
+        for match in image_pattern.finditer(original_content):
+            alt_text = match.group(1)
+            image_path = match.group(2)
+            
+            # Basic validation
+            if not image_path.strip():
+                continue
+            
+            if image_path in seen_images:
+                continue
+            
+            # Look for blockquote description immediately after the image
+            remaining_content = original_content[match.end():]
+            
+            # Extract consecutive blockquote lines
+            blockquote_lines = []
+            for line in remaining_content.split('\n'):
+                stripped = line.strip()
+                if stripped.startswith('>'):
+                    blockquote_lines.append(stripped[1:].strip())
+                elif stripped:
+                    # Hit a non-blockquote, non-empty line - stop
+                    break
+            
+            # Build the reference
+            image_ref = {
+                "reference_id": str(next_id),
+                "file_path": image_path,
+                "is_image": True,
+                "chunk_id": chunk_id
+            }
+            
+            # Prioritize blockquote description, fall back to alt text
+            if blockquote_lines:
+                description = ' '.join(blockquote_lines)
+            else:
+                description = alt_text.strip()
+            
+            if description:
+                image_ref["description"] = description
+            
+            reference_list.append(image_ref)
+            seen_images.add(image_path)
+            next_id += 1
+        
+        # Now remove all image markdown and their blockquote descriptions
+        # First normalize line endings to \n only for easier regex matching
+        content_normalized = content.replace('\r\n', '\n').replace('\r', '\n')
+        
+        # Pattern: image markdown followed by blockquote lines
+        # This matches: ![...](...)  followed by lines starting with >
+        image_with_blockquote_pattern = re.compile(
+            r'!\[.*?\]\(.*?\)\n*(?:^>.*$\n?)*',
+            re.MULTILINE
+        )
+        cleaned_content = image_with_blockquote_pattern.sub('', content_normalized)
+        
+        # Restore original line ending style if content had \r\n
+        if '\r\n' in content:
+            cleaned_content = cleaned_content.replace('\n', '\r\n')
+        
+        # Clean up multiple consecutive newlines
+        cleaned_content = re.sub(r'\n{3,}', '\n\n', cleaned_content)
+        
+        # Update the chunk with cleaned content
+        chunk["content"] = cleaned_content.strip()
+    
+    return reference_list
+
+
+
 def _extract_doc_targets_from_query(query: str) -> list[str]:
     if not query:
         return []
@@ -4144,6 +4253,9 @@ async def _build_context_str(
         reference_list, original_entities_context, original_relations_context
     )
 
+    # Extract images from chunks and add to reference_list
+    reference_list = _extract_images_from_chunks(truncated_chunks, reference_list)
+
     # Build file_path to reference_id mapping for entities and relations
     file_path_to_ref_id = {}
     for ref in reference_list:
@@ -4199,11 +4311,46 @@ async def _build_context_str(
     text_units_str = "\n".join(
         json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+    
+    # Create map of ref_id to content for snippet generation
+    ref_content_map = {c["reference_id"]: c["content"] for c in chunks_context}
+
+    # Build reference list string with image descriptions
+    reference_lines = []
+    for ref in reference_list:
+        if not ref.get("reference_id"):
+            continue
+        
+        ref_id = ref["reference_id"]
+        file_path = ref.get("file_path", "")
+        
+        # Include description for images
+        if ref.get("is_image") and ref.get("description"):
+            reference_lines.append(f"[{ref_id}] {file_path} - {ref['description']}")
+        else:
+            # For text chunks, include a snippet to help LLM distinguish them
+            content = ref_content_map.get(ref_id, "")
+            # Take first 100 chars, replace newlines with spaces
+            snippet = content[:100].replace('\n', ' ').strip()
+            if snippet:
+                reference_lines.append(f"[{ref_id}] {file_path} - \"{snippet}...\"")
+            else:
+                reference_lines.append(f"[{ref_id}] {file_path}")
+    
+    reference_list_str = "\n".join(reference_lines)
+    
+    # Debug logging to verify what's being sent to LLM
+    logger.info(f"======= REFERENCE LIST SENT TO LLM (Total: {len(reference_lines)}) =======")
+    logger.info(reference_list_str[:2000] + "..." if len(reference_list_str) > 2000 else reference_list_str)
+    logger.info("======= END REFERENCE LIST =======")
+    
+    # Log first chunk content to verify image removal
+    if chunks_context:
+        first_chunk = chunks_context[0]
+        logger.info(f"======= SAMPLE CHUNK CONTENT (ref_id={first_chunk.get('reference_id')}) =======")
+        content_preview = first_chunk.get('content', '')[:500]
+        logger.info(content_preview + "..." if len(first_chunk.get('content', '')) > 500 else content_preview)
+        logger.info("======= END SAMPLE CHUNK =======")
 
     logger.info(
         f"Final context: {len(entities_context)} entities, {len(relations_context)} relations, {len(chunks_context)} chunks"
