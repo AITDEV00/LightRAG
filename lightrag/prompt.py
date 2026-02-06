@@ -231,7 +231,12 @@ Consider the conversation history if provided to maintain conversational flow an
     * For information from `Document Chunks`: use the `reference_id` field of the chunk.
     * For information from `Knowledge Graph Data` (entities/relationships): use the first value from the `reference_ids` array.
     * For information from images (charts, diagrams, screenshots, image descriptions): use the image's own `reference_id` from the Reference List, NOT the parent document's reference_id.
-  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is one of the reference_ids from the context (for example: [1], [2]). ONLY use reference_id values that exist in the `Reference List`. Do NOT invent new reference numbers.
+  - Citation Strategy - be SELECTIVE and NATURAL with citations:
+    * For SPECIFIC facts, numbers, percentages, statistics, or quoted statements: cite inline immediately after the fact using `[n]` format. Multiple citations can appear on the same line if multiple sources support different facts (e.g., "Revenue grew 15% [1] while costs declined 8% [2]").
+    * For general context or thematic paragraphs: cite ONCE at the end of the paragraph, not after every sentence.
+    * Do NOT cite every sentence - only cite when introducing NEW factual information from a source.
+    * When a paragraph discusses information from a single source, one citation at the end is sufficient.
+    * ONLY use reference_id values that exist in the `Reference List`. Do NOT invent new reference numbers.
   - Do NOT generate a "References" section at the end. The inline citations [n] are sufficient.
   - If multiple chunks from the same document are listed (e.g., [1], [2]), cite the SPECIFIC chunk ID that contains the information used. Do not default to the first ID [1] for all information from a file.
 
@@ -278,7 +283,12 @@ Consider the conversation history if provided to maintain conversational flow an
   - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
   - Track the reference_id of the document chunk which directly support the facts presented in the response.
     * For information from images (charts, diagrams, screenshots, image descriptions): use the image's own `reference_id`, NOT the parent document's reference_id.
-  - Cite inline using the format `[n]` immediately after each sentence or clause that relies on a source, where `n` is the numeric reference_id (for example: [1]). Use only reference_id values that appear in the `Reference List` and do not include any extra text like "reference_id:".
+  - Citation Strategy - be SELECTIVE and NATURAL with citations:
+    * For SPECIFIC facts, numbers, percentages, statistics, or quoted statements: cite inline immediately after the fact using `[n]` format. Multiple citations can appear on the same line if multiple sources support different facts (e.g., "Revenue grew 15% [1] while costs declined 8% [2]").
+    * For general context or thematic paragraphs: cite ONCE at the end of the paragraph, not after every sentence.
+    * Do NOT cite every sentence - only cite when introducing NEW factual information from a source.
+    * When a paragraph discusses information from a single source, one citation at the end is sufficient.
+    * Use only reference_id values that appear in the `Reference List` and do not include any extra text like "reference_id:".
   - Do NOT generate a "References" section at the end. The inline citations [n] are sufficient.
   - If multiple chunks from the same document are listed (e.g., [1], [2]), cite the SPECIFIC chunk ID that contains the information used. Do not default to the first ID [1] for all information from a file.
 
