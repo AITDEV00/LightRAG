@@ -311,7 +311,9 @@ class RAGEvaluator:
                 "query": question,
                 "mode": "mix",
                 "include_references": True,
-                "include_chunk_content": True,  # NEW: Request chunk content in references
+                "include_chunk_text": True,  # Include chunk text content
+                "include_image_descriptions": True,  # Include image descriptions
+                "include_entity_descriptions": True,  # Include entity descriptions
                 "response_type": "Multiple Paragraphs",
                 "top_k": int(os.getenv("EVAL_QUERY_TOP_K", "10")),
             }

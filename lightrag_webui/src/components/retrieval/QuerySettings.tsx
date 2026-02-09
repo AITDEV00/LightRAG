@@ -494,20 +494,62 @@ export default function QuerySettings() {
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <label htmlFor="include_chunk_content" className="flex-1 ml-1 cursor-help">
-                        Include Chunk Content
+                      <label htmlFor="include_chunk_text" className="flex-1 ml-1 cursor-help">
+                        Include Chunk Text
                       </label>
                     </TooltipTrigger>
                     <TooltipContent side="left">
-                      <p>Include actual chunk content in references for hover display and citations</p>
+                      <p>Include chunk text content in references. Disable to reduce payload size.</p>
                     </TooltipContent>
                   </Tooltip>
                 </TooltipProvider>
                 <Checkbox
                   className="mr-10 cursor-pointer"
-                  id="include_chunk_content"
-                  checked={querySettings.include_chunk_content ?? false}
-                  onCheckedChange={(checked) => handleChange('include_chunk_content', checked)}
+                  id="include_chunk_text"
+                  checked={querySettings.include_chunk_text ?? true}
+                  onCheckedChange={(checked) => handleChange('include_chunk_text', checked)}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="include_image_descriptions" className="flex-1 ml-1 cursor-help">
+                        Include Image Descriptions
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>Include image descriptions in references. Disable to reduce payload size.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="include_image_descriptions"
+                  checked={querySettings.include_image_descriptions ?? true}
+                  onCheckedChange={(checked) => handleChange('include_image_descriptions', checked)}
+                />
+              </div>
+
+              <div className="flex items-center gap-2">
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <label htmlFor="include_entity_descriptions" className="flex-1 ml-1 cursor-help">
+                        Include Entity Descriptions
+                      </label>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">
+                      <p>Include entity descriptions in references. Disable to reduce payload size.</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <Checkbox
+                  className="mr-10 cursor-pointer"
+                  id="include_entity_descriptions"
+                  checked={querySettings.include_entity_descriptions ?? true}
+                  onCheckedChange={(checked) => handleChange('include_entity_descriptions', checked)}
                 />
               </div>
             </>

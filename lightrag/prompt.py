@@ -223,41 +223,45 @@ Consider the conversation history if provided to maintain conversational flow an
 
 ---Instructions---
 
-1. Step-by-Step Instruction:
-  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
-  - Scrutinize both `Knowledge Graph Data` (entities and relationships) and `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
-  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
-  - Track the reference_id for citing sources:
-    * For information from `Document Chunks`: use the `reference_id` field of the chunk.
-    * For information from `Knowledge Graph Data` (entities/relationships): use the first value from the `reference_ids` array.
-    * For information from images (charts, diagrams, screenshots, image descriptions): use the image's own `reference_id` from the Reference List, NOT the parent document's reference_id.
-  - Citation Strategy - be SELECTIVE and NATURAL with citations:
-    * For SPECIFIC facts, numbers, percentages, statistics, or quoted statements: cite inline immediately after the fact using `[n]` format. Multiple citations can appear on the same line if multiple sources support different facts (e.g., "Revenue grew 15% [1] while costs declined 8% [2]").
-    * For general context or thematic paragraphs: cite ONCE at the end of the paragraph, not after every sentence.
-    * Do NOT cite every sentence - only cite when introducing NEW factual information from a source.
-    * When a paragraph discusses information from a single source, one citation at the end is sufficient.
-    * ONLY use reference_id values that exist in the `Reference List`. Do NOT invent new reference numbers.
-  - Do NOT generate a "References" section at the end. The inline citations [n] are sufficient.
-  - If multiple chunks from the same document are listed (e.g., [1], [2]), cite the SPECIFIC chunk ID that contains the information used. Do not default to the first ID [1] for all information from a file.
+1. Citation Format:
+  - Citations use the format `[docId_type_index]` where:
+    * `docId`: Document number (1, 2, 3...)
+    * `type`: c = content/chunk, m = media/image, e = entity
+    * `index`: Item index within that type (0, 1, 2...)
+  - Examples: [1_c0] = Document 1, content 0; [1_m2] = Document 1, image 2; [2_e1] = Document 2, entity 1
+  
+2. Citation Source Priority (CRITICAL - always cite original sources):
+  - **ALWAYS prefer content [_c] and image [_m] citations over entity [_e] citations**
+  - Entities are DERIVED summaries - use entity citations [_e] ONLY as a last resort
+  
+  **When to cite IMAGES [_m] vs CONTENT [_c]:**
+  - Cite **images [_m]** when using data from: charts, graphs, tables, diagrams, bar charts, pie charts, visual comparisons
+  - Cite **content [_c]** when using data from: narrative text, paragraphs, written descriptions
+  - If image descriptions contain chart/table data (percentages, statistics, comparisons), cite the IMAGE not the content
+  - ONLY use citation keys that appear in the Context. Do NOT invent citation keys.
 
-2. Content & Grounding:
-  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
-  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+3. Citation Strategy - be SELECTIVE and NATURAL:
+  - For SPECIFIC facts, numbers, percentages, statistics: cite inline immediately after the fact
+  - Multiple citations can appear on the same line for different facts (e.g., "Revenue grew 15% [1_c0] while costs declined 8% [1_c1]")
+  - For general context paragraphs: cite ONCE at the end, not after every sentence
+  - Do NOT cite every sentence - only cite when introducing NEW factual information
+  - Do NOT generate a "References" section at the end
 
-3. Formatting & Language:
-  - The response MUST be in the same language as the user query.
-  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
-  - The response should be presented in {response_type}.
+4. Content & Grounding:
+  - Strictly adhere to the provided context; DO NOT invent or assume information not explicitly stated
+  - If the answer cannot be found, state that you do not have enough information
 
+5. Formatting & Language:
+  - Response MUST be in the same language as the user query
+  - Use Markdown formatting (headings, bold, bullet points)
+  - Response should be presented in {response_type}
 
-4. Image Citations:
-  - Images (charts, diagrams, screenshots, image descriptions) have separate reference IDs from their parent documents in the "Reference List".
-  - CRITICAL: When discussing information DERIVED FROM an image (e.g., data from a chart, details from a diagram), you MUST cite the image's reference_id, NOT the document containing it.
-    * Example: If a document [1] contains text with an embedded chart [5], and you're discussing chart data, cite [5].
-  - When mentioning an image, use the format: "See [n]" or "As shown in [n]".
-  - Do NOT use markdown links `![...](...)` if a reference ID is available.
+6. Natural Language for Citations:
+  - NEVER use the word "context" when referring to sources (e.g., DO NOT say "as reported in the context")
+  - Instead, use natural phrasing like: "according to the data", "the source shows", "based on the report", or simply place the citation after the fact
+  - Example: Instead of "1.1 million seats as reported in the context [1_e0]", write "1.1 million seats [1_e0]" or "the data shows 1.1 million seats [1_e0]"
 
-5. Additional Instructions: {user_prompt}
+7. Additional Instructions: {user_prompt}
 
 
 ---Context---
@@ -277,37 +281,44 @@ Consider the conversation history if provided to maintain conversational flow an
 
 ---Instructions---
 
-1. Step-by-Step Instruction:
-  - Carefully determine the user's query intent in the context of the conversation history to fully understand the user's information need.
-  - Scrutinize `Document Chunks` in the **Context**. Identify and extract all pieces of information that are directly relevant to answering the user query.
-  - Weave the extracted facts into a coherent and logical response. Your own knowledge must ONLY be used to formulate fluent sentences and connect ideas, NOT to introduce any external information.
-  - Track the reference_id of the document chunk which directly support the facts presented in the response.
-    * For information from images (charts, diagrams, screenshots, image descriptions): use the image's own `reference_id`, NOT the parent document's reference_id.
-  - Citation Strategy - be SELECTIVE and NATURAL with citations:
-    * For SPECIFIC facts, numbers, percentages, statistics, or quoted statements: cite inline immediately after the fact using `[n]` format. Multiple citations can appear on the same line if multiple sources support different facts (e.g., "Revenue grew 15% [1] while costs declined 8% [2]").
-    * For general context or thematic paragraphs: cite ONCE at the end of the paragraph, not after every sentence.
-    * Do NOT cite every sentence - only cite when introducing NEW factual information from a source.
-    * When a paragraph discusses information from a single source, one citation at the end is sufficient.
-    * Use only reference_id values that appear in the `Reference List` and do not include any extra text like "reference_id:".
-  - Do NOT generate a "References" section at the end. The inline citations [n] are sufficient.
-  - If multiple chunks from the same document are listed (e.g., [1], [2]), cite the SPECIFIC chunk ID that contains the information used. Do not default to the first ID [1] for all information from a file.
+1. Citation Format:
+  - Citations use the format `[docId_type_index]` where:
+    * `docId`: Document number (1, 2, 3...)
+    * `type`: c = content/chunk, m = media/image, e = entity
+    * `index`: Item index within that type (0, 1, 2...)
+  - Examples: [1_c0] = Document 1, content 0; [1_m2] = Document 1, image 2; [2_e1] = Document 2, entity 1
+  
+2. Citation Source Priority (CRITICAL - always cite original sources):
+  - **ALWAYS prefer content [_c] and image [_m] citations**
+  
+  **When to cite IMAGES [_m] vs CONTENT [_c]:**
+  - Cite **images [_m]** when using data from: charts, graphs, tables, diagrams, bar charts, pie charts, visual comparisons
+  - Cite **content [_c]** when using data from: narrative text, paragraphs, written descriptions
+  - If image descriptions contain chart/table data (percentages, statistics, comparisons), cite the IMAGE not the content
+  - ONLY use citation keys that appear in the Context. Do NOT invent citation keys.
 
-2. Content & Grounding:
-  - Strictly adhere to the provided context from the **Context**; DO NOT invent, assume, or infer any information not explicitly stated.
-  - If the answer cannot be found in the **Context**, state that you do not have enough information to answer. Do not attempt to guess.
+3. Citation Strategy - be SELECTIVE and NATURAL:
+  - For SPECIFIC facts, numbers, percentages, statistics: cite inline immediately after the fact
+  - Multiple citations can appear on the same line for different facts (e.g., "Revenue grew 15% [1_c0] while costs declined 8% [1_c1]")
+  - For general context paragraphs: cite ONCE at the end, not after every sentence
+  - Do NOT cite every sentence - only cite when introducing NEW factual information
+  - Do NOT generate a "References" section at the end
 
-3. Formatting & Language:
-  - The response MUST be in the same language as the user query.
-  - The response MUST utilize Markdown formatting for enhanced clarity and structure (e.g., headings, bold text, bullet points).
-  - The response should be presented in {response_type}.
+4. Content & Grounding:
+  - Strictly adhere to the provided context; DO NOT invent or assume information not explicitly stated
+  - If the answer cannot be found, state that you do not have enough information
 
+5. Formatting & Language:
+  - Response MUST be in the same language as the user query
+  - Use Markdown formatting (headings, bold, bullet points)
+  - Response should be presented in {response_type}
 
-4. Image Citations:
-  - Images (charts, diagrams, screenshots, image descriptions) have separate reference IDs from their parent documents in the \"Reference List\".\n  - CRITICAL: When discussing information DERIVED FROM an image (e.g., data from a chart, details from a diagram), you MUST cite the image's reference_id, NOT the document containing it.
-    * Example: If a document [1] contains text with an embedded chart [5], and you're discussing chart data, cite [5].
-  - When mentioning an image, use the format: \"See [n]\" or \"As shown in [n]\".\n  - Do NOT use markdown links `![...](...)` if a reference ID is available.
+6. Natural Language for Citations:
+  - NEVER use the word "context" when referring to sources (e.g., DO NOT say "as reported in the context")
+  - Instead, use natural phrasing like: "according to the data", "the source shows", "based on the report", or simply place the citation after the fact
+  - Example: Instead of "1.1 million seats as reported in the context [1_e0]", write "1.1 million seats [1_e0]" or "the data shows 1.1 million seats [1_e0]"
 
-5. Additional Instructions: {user_prompt}
+7. Additional Instructions: {user_prompt}
 
 
 ---Context---
@@ -316,44 +327,50 @@ Consider the conversation history if provided to maintain conversational flow an
 """
 
 PROMPTS["kg_query_context"] = """
-Knowledge Graph Data (Entity) - each entry may have a `reference_ids` array for citation:
+=== PRIMARY SOURCES (Cite these first) ===
+
+Document Content [docId_c_index] - PRIMARY source for text information:
+
+{text_chunks_str}
+
+Images and Charts [docId_m_index] - PRIMARY source for visual/chart data:
+
+{images_str}
+
+=== DERIVED SOURCES (Cite only if unique info not in primary sources) ===
+
+Knowledge Graph Entities [docId_e_index] - Summarized from documents:
 
 ```json
 {entities_str}
 ```
 
-Knowledge Graph Data (Relationship) - each entry may have a `reference_ids` array for citation:
+Knowledge Graph Relationships [docId_e_index] - Connections between entities:
 
 ```json
 {relations_str}
 ```
 
-Document Chunks (Each entry has a `reference_id` for citation):
+=== REFERENCE INDEX ===
 
-```json
-{text_chunks_str}
-```
-
-Reference List (Use these reference_ids [n] for inline citations):
-
-```
 {reference_list_str}
-```
 
 """
 
 PROMPTS["naive_query_context"] = """
-Document Chunks (Each entry has a reference_id refer to the `Reference List`):
+=== PRIMARY SOURCES (Cite these) ===
 
-```json
+Document Content [docId_c_index] - PRIMARY source for text information:
+
 {text_chunks_str}
-```
 
-Reference List (Each entry starts with a [reference_id] that corresponds to entries in the Document Chunks):
+Images and Charts [docId_m_index] - PRIMARY source for visual/chart data:
 
-```
+{images_str}
+
+=== REFERENCE INDEX ===
+
 {reference_list_str}
-```
 
 """
 

@@ -139,21 +139,60 @@ export type QueryRequest = {
   enable_rerank?: boolean
   /** Include references in the response for citation purposes. Default is True. */
   include_references?: boolean
-  /** Include chunk content in references for display and citation purposes. Default is False. */
-  include_chunk_content?: boolean
-  /** If True, return only a list of source file paths without LLM generation. */
-  files_only?: boolean
+  /** If True, includes chunk text content in references. Set to False to reduce payload size. Default is True. */
+  include_chunk_text?: boolean
+  /** If True, includes image descriptions in references. Set to False to reduce payload size. Default is True. */
+  include_image_descriptions?: boolean
+  /** If True, includes entity descriptions in references. Set to False to reduce payload size. Default is True. */
+  include_entity_descriptions?: boolean
 }
 
+/**
+ * Content item within a document reference.
+ * Citation format: [docId_c_index] e.g., [1_c0]
+ */
+export type ContentItem = {
+  index: number
+  chunk_id: string
+  text: string
+}
+
+/**
+ * Image item within a document reference.
+ * Citation format: [docId_m_index] e.g., [1_m0]
+ */
+export type ImageItem = {
+  index: number
+  file_path: string
+  description?: string
+}
+
+/**
+ * Entity item within a document reference.
+ * Citation format: [docId_e_index] e.g., [1_e0]
+ */
+export type EntityItem = {
+  index: number
+  entity_name: string
+  entity_type: string
+  description?: string
+}
+
+/**
+ * Document reference with grouped contents, images, and entities.
+ * Citations use format [docId_type_index] where:
+ * - docId: reference_id (1, 2, 3...)
+ * - type: c=content, m=media/image, e=entity
+ * - index: item index within that type
+ * 
+ * Examples: [1_c0], [1_m2], [2_e1]
+ */
 export type Reference = {
   reference_id: string
   file_path: string
-  content?: string[]
-  entities?: Array<{
-    entity_name: string
-    entity_type: string
-    description?: string
-  }>
+  contents?: ContentItem[]
+  images?: ImageItem[]
+  entities?: EntityItem[]
 }
 
 export type QueryResponse = {

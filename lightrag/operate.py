@@ -3947,6 +3947,11 @@ def _merge_reference_list_with_context_paths(
     entities_context: list[dict],
     relations_context: list[dict],
 ) -> list[dict]:
+    """
+    Merge file paths from entities/relations into reference_list.
+    Creates new document references for any file paths not already represented.
+    Uses the grouped document structure with contents[], images[], entities[] arrays.
+    """
     existing_paths = {ref.get("file_path") for ref in reference_list if ref.get("file_path")}
     unique_paths = []
     for item in entities_context + relations_context:
@@ -3961,7 +3966,14 @@ def _merge_reference_list_with_context_paths(
 
     next_id = len(reference_list) + 1
     for path in unique_paths:
-        reference_list.append({"reference_id": str(next_id), "file_path": path})
+        # Create new document reference with grouped structure
+        reference_list.append({
+            "reference_id": str(next_id),
+            "file_path": path,
+            "contents": [],  # No chunks from this file
+            "images": [],
+            "entities": []
+        })
         next_id += 1
     return reference_list
 
@@ -3969,39 +3981,48 @@ def _merge_reference_list_with_context_paths(
 
 def _extract_images_from_chunks(chunks: list[dict], reference_list: list[dict]) -> list[dict]:
     """
-    Extracts markdown images from chunks and adds them to reference_list.
+    Extracts markdown images from chunks and adds them to the document's images[] array.
     Also REMOVES the image markdown and descriptions from chunk content to prevent duplication.
-    Returns the updated reference_list with new entries having a 'reference_id'.
+    
+    Images are added to the existing document reference (matched by file_path) instead of
+    creating separate reference_ids. Each image gets an index within the document's images array.
+    
+    Returns the updated reference_list with images added to each document's images[] array.
     """
     if not chunks:
         return reference_list
 
-    # Start ID counter based on existing references
-    # Parse existing IDs to find the max
-    max_id = 0
-    existing_ids = set()
+    # Build a mapping from file_path to reference for quick lookup
+    file_path_to_ref: dict[str, dict] = {}
     for ref in reference_list:
-        rid = ref.get("reference_id")
-        if rid and rid.isdigit():
-            val = int(rid)
-            max_id = max(max_id, val)
-            existing_ids.add(val)
+        fp = ref.get("file_path", "")
+        if fp:
+            file_path_to_ref[fp] = ref
     
-    next_id = max_id + 1
+    # Track seen images globally to avoid duplicates (deduplication by image file_path)
+    seen_images: set[str] = set()
     
-    # Track seen images to avoid duplicates (deduplication by file_path)
-    seen_images = {ref["file_path"] for ref in reference_list if ref.get("file_path")}
+    # Track image index per document
+    doc_image_counts: dict[str, int] = {}
     
     # Regex for images: ![alt](path)
     image_pattern = re.compile(r'!\[(.*?)\]\((.*?)\)')
     
-    # Regex for consecutive blockquote lines (can be multi-line)
-    blockquote_pattern = re.compile(r'^\>\s*(.+)$', re.MULTILINE)
-    
     for chunk in chunks:
         content = chunk.get("content", "")
         chunk_id = chunk.get("chunk_id", "")
+        chunk_file_path = chunk.get("file_path", "")
         original_content = content
+        
+        # Find the document reference for this chunk
+        doc_ref = file_path_to_ref.get(chunk_file_path)
+        if not doc_ref:
+            # If no matching document, skip image extraction for this chunk
+            continue
+        
+        # Initialize images array if not present
+        if "images" not in doc_ref:
+            doc_ref["images"] = []
         
         # Find all images
         for match in image_pattern.finditer(original_content):
@@ -4028,38 +4049,74 @@ def _extract_images_from_chunks(chunks: list[dict], reference_list: list[dict]) 
                     # Hit a non-blockquote, non-empty line - stop
                     break
             
-            # Build the reference
-            image_ref = {
-                "reference_id": str(next_id),
-                "file_path": image_path,
-                "is_image": True,
-                "chunk_id": chunk_id
-            }
-            
             # Prioritize blockquote description, fall back to alt text
             if blockquote_lines:
                 description = ' '.join(blockquote_lines)
             else:
                 description = alt_text.strip()
             
-            if description:
-                image_ref["description"] = description
+            # Get next image index for this document
+            doc_id = doc_ref.get("reference_id", "")
+            if doc_id not in doc_image_counts:
+                doc_image_counts[doc_id] = 0
+            image_index = doc_image_counts[doc_id]
+            doc_image_counts[doc_id] += 1
             
-            reference_list.append(image_ref)
+            # Build the image entry for the document's images array
+            image_entry = {
+                "index": image_index,
+                "file_path": image_path,
+                "chunk_id": chunk_id  # Track which chunk this image came from
+            }
+            
+            if description:
+                image_entry["description"] = description
+            
+            doc_ref["images"].append(image_entry)
             seen_images.add(image_path)
-            next_id += 1
         
         # Now remove all image markdown and their blockquote descriptions
         # First normalize line endings to \n only for easier regex matching
         content_normalized = content.replace('\r\n', '\n').replace('\r', '\n')
         
-        # Pattern: image markdown followed by blockquote lines
+        # Pattern 1: image markdown followed by blockquote lines
         # This matches: ![...](...)  followed by lines starting with >
         image_with_blockquote_pattern = re.compile(
             r'!\[.*?\]\(.*?\)\n*(?:^>.*$\n?)*',
             re.MULTILINE
         )
         cleaned_content = image_with_blockquote_pattern.sub('', content_normalized)
+        
+        # Pattern 2: Orphaned image description blockquotes (when chunking separates them from image)
+        # Match blockquote sections that look like image descriptions (contain SUMMARY/DATA/LOGIC)
+        # This pattern matches consecutive > lines that contain image description keywords
+        orphaned_blockquote_pattern = re.compile(
+            r'(?:^>.*(?:SUMMARY|DATA|LOGIC).*$\n?)(?:^>.*$\n?)*',
+            re.MULTILINE | re.IGNORECASE
+        )
+        cleaned_content = orphaned_blockquote_pattern.sub('', cleaned_content)
+        
+        # Pattern 3: Remove any remaining pure blockquote sections (lines starting with >)
+        # that appear to be image descriptions (multiple consecutive > lines)
+        remaining_blockquote_pattern = re.compile(
+            r'(?:^>.*$\n?){3,}',  # 3+ consecutive blockquote lines are likely image descriptions
+            re.MULTILINE
+        )
+        cleaned_content = remaining_blockquote_pattern.sub('', cleaned_content)
+        
+        # Pattern 4: Remove inline blockquote content (when > markers are not at line start)
+        # This handles cases where chunking joined lines, e.g., "| data | > > LOGIC: text"
+        # Match from "> SUMMARY:", "> DATA:", "> LOGIC:" to end of line or next sentence
+        inline_blockquote_pattern = re.compile(
+            r'>\s*>?\s*(SUMMARY|DATA|LOGIC)\s*:.*?(?=\n\n|\n[A-Z]|\Z)',
+            re.IGNORECASE | re.DOTALL
+        )
+        cleaned_content = inline_blockquote_pattern.sub('', cleaned_content)
+        
+        # Pattern 5: Remove any remaining > markers that look like blockquote remnants
+        # Match sequences of > followed by text on same line (inline blockquotes)
+        inline_gt_pattern = re.compile(r'\s*>\s*>?\s*(?=[A-Z\-\*\|])')
+        cleaned_content = inline_gt_pattern.sub(' ', cleaned_content)
         
         # Restore original line ending style if content had \r\n
         if '\r\n' in content:
@@ -4068,7 +4125,9 @@ def _extract_images_from_chunks(chunks: list[dict], reference_list: list[dict]) 
         # Clean up multiple consecutive newlines
         cleaned_content = re.sub(r'\n{3,}', '\n\n', cleaned_content)
         
-        # Update the chunk with cleaned content
+        # Update the chunk with cleaned content (used for LLM context)
+        # Note: We intentionally do NOT update reference_list.contents[].text
+        # so the API response preserves the original content with image descriptions
         chunk["content"] = cleaned_content.strip()
     
     return reference_list
@@ -4216,6 +4275,7 @@ async def _build_context_str(
         entities_str=pre_entities_str,
         relations_str=pre_relations_str,
         text_chunks_str="",
+        images_str="",
         reference_list_str="",
     )
     kg_context_tokens = len(tokenizer.encode(pre_kg_context))
@@ -4264,77 +4324,90 @@ async def _build_context_str(
     # Extract images from chunks and add to reference_list
     reference_list = _extract_images_from_chunks(truncated_chunks, reference_list)
 
-    # Build chunk_id to reference_id mapping for precise entity/relation citations
-    # Also build file_path to reference_ids mapping (one file may have multiple chunks)
-    chunk_id_to_ref_id = {}
-    file_path_to_ref_ids = {}  # Changed to store list of ref_ids per file_path
+    # Build file_path to document reference mapping for entity/relation linking
+    file_path_to_doc_ref: dict[str, dict] = {}
     for ref in reference_list:
-        chunk_id = ref.get("chunk_id", "")
         fp = ref.get("file_path", "")
-        ref_id = ref.get("reference_id", "")
-        if chunk_id and ref_id:
-            chunk_id_to_ref_id[chunk_id] = ref_id
-        if fp and ref_id:
-            if fp not in file_path_to_ref_ids:
-                file_path_to_ref_ids[fp] = []
-            if ref_id not in file_path_to_ref_ids[fp]:
-                file_path_to_ref_ids[fp].append(ref_id)
+        if fp:
+            file_path_to_doc_ref[fp] = ref
 
-    # Add reference_ids to entities_context based on their source_id (chunk_id) first, then file_path
+    # Track entity indices per document for citation keys
+    doc_entity_counts: dict[str, int] = {}
+    
+    # Add entities to document's entities[] array with indices and citation keys
     for entity in entities_context:
-        entity_source_id = entity.get("source_id", "")
         entity_file_path = entity.get("file_path", "")
-        ref_ids = []
         
-        # First try to map using source_id (which may contain multiple chunk_ids separated by <SEP>)
-        if entity_source_id:
-            source_ids = split_string_by_multi_markers(entity_source_id, [GRAPH_FIELD_SEP])
-            for sid in source_ids:
-                if sid in chunk_id_to_ref_id:
-                    ref_id = chunk_id_to_ref_id[sid]
-                    if ref_id not in ref_ids:
-                        ref_ids.append(ref_id)
-        
-        # Fall back to file_path if no source_id matches (but only get first ref_id to avoid flooding)
-        if not ref_ids and entity_file_path:
+        # Find the document reference for this entity
+        doc_ref = None
+        if entity_file_path:
+            # Handle multiple file paths separated by <SEP>
             paths = split_string_by_multi_markers(entity_file_path, [GRAPH_FIELD_SEP])
             for p in paths:
-                if p in file_path_to_ref_ids and file_path_to_ref_ids[p]:
-                    # Only take first ref_id as fallback to avoid claiming all chunks for entities without source_id
-                    ref_ids.append(file_path_to_ref_ids[p][0])
+                if p in file_path_to_doc_ref:
+                    doc_ref = file_path_to_doc_ref[p]
                     break
         
-        if ref_ids:
-            entity["reference_ids"] = ref_ids
+        if doc_ref:
+            # Initialize entities array if not present
+            if "entities" not in doc_ref:
+                doc_ref["entities"] = []
+            
+            doc_id = doc_ref.get("reference_id", "")
+            if doc_id not in doc_entity_counts:
+                doc_entity_counts[doc_id] = 0
+            entity_index = doc_entity_counts[doc_id]
+            doc_entity_counts[doc_id] += 1
+            
+            # Add citation key to entity for context display
+            entity["citation_key"] = f"{doc_id}_e{entity_index}"
+            
+            # Add entity to document's entities array
+            doc_ref["entities"].append({
+                "index": entity_index,
+                "entity_name": entity.get("entity", ""),
+                "entity_type": entity.get("entity_type", ""),
+                "description": entity.get("description", "")
+            })
 
-    # Add reference_ids to relations_context based on their source_id (chunk_id) first, then file_path
+    # For relations, we add them as part of the entity context but don't create separate citation keys
+    # Relations describe connections between entities and will be shown in entity tooltips
     for relation in relations_context:
-        relation_source_id = relation.get("source_id", "")
         relation_file_path = relation.get("file_path", "")
-        ref_ids = []
         
-        # First try to map using source_id (which may contain multiple chunk_ids separated by <SEP>)
-        if relation_source_id:
-            source_ids = split_string_by_multi_markers(relation_source_id, [GRAPH_FIELD_SEP])
-            for sid in source_ids:
-                if sid in chunk_id_to_ref_id:
-                    ref_id = chunk_id_to_ref_id[sid]
-                    if ref_id not in ref_ids:
-                        ref_ids.append(ref_id)
-        
-        # Fall back to file_path if no source_id matches (but only get first ref_id to avoid flooding)
-        if not ref_ids and relation_file_path:
+        # Find the document reference for this relation
+        doc_ref = None
+        if relation_file_path:
             paths = split_string_by_multi_markers(relation_file_path, [GRAPH_FIELD_SEP])
             for p in paths:
-                if p in file_path_to_ref_ids and file_path_to_ref_ids[p]:
-                    # Only take first ref_id as fallback to avoid claiming all chunks for relations without source_id
-                    ref_ids.append(file_path_to_ref_ids[p][0])
+                if p in file_path_to_doc_ref:
+                    doc_ref = file_path_to_doc_ref[p]
                     break
         
-        if ref_ids:
-            relation["reference_ids"] = ref_ids
+        if doc_ref:
+            doc_id = doc_ref.get("reference_id", "")
+            # Relations use the same entity index counter to continue numbering
+            if doc_id not in doc_entity_counts:
+                doc_entity_counts[doc_id] = 0
+            entity_index = doc_entity_counts[doc_id]
+            doc_entity_counts[doc_id] += 1
+            
+            # Add citation key to relation for context display
+            relation["citation_key"] = f"{doc_id}_e{entity_index}"
+            
+            # Initialize entities array if not present
+            if "entities" not in doc_ref:
+                doc_ref["entities"] = []
+            
+            # Add relation as an entity entry (relations are entity-like for citation purposes)
+            doc_ref["entities"].append({
+                "index": entity_index,
+                "entity_name": f"{relation.get('entity1', '')} -> {relation.get('entity2', '')}",
+                "entity_type": "relationship",
+                "description": relation.get("description", "")
+            })
 
-    # Rebuild entities_str and relations_str with reference_ids
+    # Rebuild entities_str and relations_str with citation_key
     entities_str = "\n".join(
         json.dumps(entity, ensure_ascii=False) for entity in entities_context
     )
@@ -4342,27 +4415,54 @@ async def _build_context_str(
         json.dumps(relation, ensure_ascii=False) for relation in relations_context
     )
 
-    # Rebuild chunks_context with truncated chunks
+    # Rebuild chunks_context with truncated chunks and add citation keys
     # The actual tokens may be slightly less than available_chunk_tokens due to deduplication logic
     chunks_context = []
     for i, chunk in enumerate(truncated_chunks):
+        ref_id = chunk.get("reference_id", "")
+        content_index = chunk.get("content_index", 0)
+        citation_key = f"{ref_id}_c{content_index}"
+        
         chunks_context.append(
             {
-                "reference_id": chunk["reference_id"],
+                "citation_key": citation_key,
+                "reference_id": ref_id,
+                "content_index": content_index,
                 "content": chunk["content"],
             }
         )
 
-    # Format chunks as clear text blocks to ensure LLM associates ID with content
+    # Format chunks as clear text blocks with citation keys
     text_units_str = "\n\n".join(
-        f"[Reference ID: {text_unit['reference_id']}]\nContent:\n{text_unit['content']}" 
+        f"[{text_unit['citation_key']}] Content:\n{text_unit['content']}" 
         for text_unit in chunks_context
     )
-    
-    # Create map of ref_id to content for snippet generation
-    ref_content_map = {c["reference_id"]: c["content"] for c in chunks_context}
 
-    # Build reference list string with image descriptions
+    # Build separate Images section with full descriptions for prominent LLM visibility
+    # This makes image descriptions as visible as content chunks for citation purposes
+    image_units = []
+    for ref in reference_list:
+        doc_id = ref.get("reference_id", "")
+        for img in ref.get("images", []):
+            citation_key = f"{doc_id}_m{img['index']}"
+            desc = img.get("description", "")
+            img_file_path = img.get("file_path", "")
+            if desc:
+                image_units.append(f"[{citation_key}] Image ({img_file_path}):\n{desc}")
+            elif img_file_path:
+                image_units.append(f"[{citation_key}] Image: {img_file_path}")
+    
+    images_str = "\n\n".join(image_units) if image_units else ""
+
+    # Debug logging to verify images section content
+    logger.info(f"======= IMAGES SECTION FOR LLM ({len(image_units)} images) =======")
+    if images_str:
+        logger.info(images_str[:2000] + "..." if len(images_str) > 2000 else images_str)
+    else:
+        logger.info("(No images in context)")
+    logger.info("======= END IMAGES SECTION =======")
+
+    # Build reference list string with grouped document structure
     reference_lines = []
     for ref in reference_list:
         if not ref.get("reference_id"):
@@ -4371,18 +4471,33 @@ async def _build_context_str(
         ref_id = ref["reference_id"]
         file_path = ref.get("file_path", "")
         
-        # Include description for images
-        if ref.get("is_image") and ref.get("description"):
-            reference_lines.append(f"[{ref_id}] {file_path} - {ref['description']}")
-        else:
-            # For text chunks, include a snippet to help LLM distinguish them
-            content = ref_content_map.get(ref_id, "")
-            # Take first 100 chars, replace newlines with spaces
-            snippet = content[:100].replace('\n', ' ').strip()
-            if snippet:
-                reference_lines.append(f"[{ref_id}] {file_path} - \"{snippet}...\"")
-            else:
-                reference_lines.append(f"[{ref_id}] {file_path}")
+        # Document header
+        reference_lines.append(f"\n=== Document [{ref_id}]: {file_path} ===")
+        
+        # List contents with citation keys
+        contents = ref.get("contents", [])
+        if contents:
+            reference_lines.append("  Contents:")
+            for c in contents:
+                snippet = c.get("text", "")[:80].replace('\n', ' ').strip()
+                reference_lines.append(f"    [{ref_id}_c{c['index']}]: \"{snippet}...\"")
+        
+        # List images with citation keys
+        images = ref.get("images", [])
+        if images:
+            reference_lines.append("  Images:")
+            for img in images:
+                desc = img.get("description", img.get("file_path", ""))[:80]
+                reference_lines.append(f"    [{ref_id}_m{img['index']}]: {desc}")
+        
+        # List entities with citation keys
+        entities = ref.get("entities", [])
+        if entities:
+            reference_lines.append("  Entities:")
+            for ent in entities:
+                ent_name = ent.get("entity_name", "")
+                ent_type = ent.get("entity_type", "")
+                reference_lines.append(f"    [{ref_id}_e{ent['index']}]: {ent_name} ({ent_type})")
     
     reference_list_str = "\n".join(reference_lines)
     
@@ -4439,6 +4554,7 @@ async def _build_context_str(
         entities_str=entities_str,
         relations_str=relations_str,
         text_chunks_str=text_units_str,
+        images_str=images_str,
         reference_list_str=reference_list_str,
     )
 
@@ -5288,6 +5404,9 @@ async def naive_query(
         processed_chunks
     )
 
+    # Extract images from chunks and add to reference_list (same as KG modes)
+    reference_list = _extract_images_from_chunks(processed_chunks_with_ref_ids, reference_list)
+
     logger.info(f"Final context: {len(processed_chunks_with_ref_ids)} chunks")
 
     # Build raw data structure for naive mode using processed chunks with reference IDs
@@ -5311,28 +5430,76 @@ async def naive_query(
         "final_chunks_count": len(processed_chunks_with_ref_ids),
     }
 
-    # Build chunks_context from processed chunks with reference IDs
+    # Build chunks_context from processed chunks with reference IDs and citation keys
     chunks_context = []
     for i, chunk in enumerate(processed_chunks_with_ref_ids):
+        ref_id = chunk.get("reference_id", "")
+        content_index = chunk.get("content_index", 0)
+        citation_key = f"{ref_id}_c{content_index}"
         chunks_context.append(
             {
-                "reference_id": chunk["reference_id"],
+                "citation_key": citation_key,
+                "reference_id": ref_id,
+                "content_index": content_index,
                 "content": chunk["content"],
             }
         )
 
-    text_units_str = "\n".join(
-        json.dumps(text_unit, ensure_ascii=False) for text_unit in chunks_context
+    # Format chunks as clear text blocks with citation keys
+    text_units_str = "\n\n".join(
+        f"[{text_unit['citation_key']}] Content:\n{text_unit['content']}" 
+        for text_unit in chunks_context
     )
-    reference_list_str = "\n".join(
-        f"[{ref['reference_id']}] {ref['file_path']}"
-        for ref in reference_list
-        if ref["reference_id"]
-    )
+
+    # Build separate Images section with full descriptions
+    image_units = []
+    for ref in reference_list:
+        doc_id = ref.get("reference_id", "")
+        for img in ref.get("images", []):
+            citation_key = f"{doc_id}_m{img['index']}"
+            desc = img.get("description", "")
+            file_path = img.get("file_path", "")
+            if desc:
+                image_units.append(f"[{citation_key}] Image ({file_path}):\n{desc}")
+            elif file_path:
+                image_units.append(f"[{citation_key}] Image: {file_path}")
+    
+    images_str = "\n\n".join(image_units) if image_units else ""
+
+    # Build reference list string with grouped document structure
+    reference_lines = []
+    for ref in reference_list:
+        if not ref.get("reference_id"):
+            continue
+        
+        ref_id = ref["reference_id"]
+        file_path = ref.get("file_path", "")
+        
+        # Document header
+        reference_lines.append(f"\n=== Document [{ref_id}]: {file_path} ===")
+        
+        # List contents with citation keys
+        contents = ref.get("contents", [])
+        if contents:
+            reference_lines.append("  Contents:")
+            for c in contents:
+                snippet = c.get("text", "")[:80].replace('\n', ' ').strip()
+                reference_lines.append(f"    [{ref_id}_c{c['index']}]: \"{snippet}...\"")
+        
+        # List images with citation keys
+        images = ref.get("images", [])
+        if images:
+            reference_lines.append("  Images:")
+            for img in images:
+                desc = img.get("description", img.get("file_path", ""))[:80]
+                reference_lines.append(f"    [{ref_id}_m{img['index']}]: {desc}")
+    
+    reference_list_str = "\n".join(reference_lines)
 
     naive_context_template = PROMPTS["naive_query_context"]
     context_content = naive_context_template.format(
         text_chunks_str=text_units_str,
+        images_str=images_str,
         reference_list_str=reference_list_str,
     )
 

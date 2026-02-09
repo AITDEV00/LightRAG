@@ -136,7 +136,9 @@ const useSettingsStoreBase = create<SettingsState>()(
         user_prompt: '',
         enable_rerank: true,
         include_references: true,
-        include_chunk_content: true
+        include_chunk_text: true,
+        include_image_descriptions: true,
+        include_entity_descriptions: true
       },
 
       setTheme: (theme: Theme) => set({ theme }),

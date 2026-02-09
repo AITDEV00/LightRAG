@@ -371,8 +371,8 @@ export default function RetrievalTesting() {
         if (state.querySettings.stream) {
           let errorMessage = ''
           await queryTextStream(
-            queryParams, 
-            updateAssistantMessage, 
+            queryParams,
+            updateAssistantMessage,
             (error) => {
               errorMessage += error
             },
@@ -401,6 +401,14 @@ export default function RetrievalTesting() {
           // Add references to the assistant message if available
           if (response.references) {
             assistantMessage.references = response.references
+            setMessages((prev) => {
+              const newMessages = [...prev]
+              const lastMessage = newMessages[newMessages.length - 1]
+              if (lastMessage && lastMessage.id === assistantMessage.id) {
+                lastMessage.references = response.references
+              }
+              return newMessages
+            })
           }
         }
       } catch (err) {

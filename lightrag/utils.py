@@ -2933,28 +2933,32 @@ def convert_to_user_format(
         f"[convert_to_user_format] Formatted {len(formatted_chunks)}/{len(chunks)} chunks"
     )
 
-    # Separate images from references and build clean reference list
-    formatted_images = []
-    clean_references = []
+    # References now use grouped document structure with contents[], images[], entities[]
+    # Just pass through the references as-is since they're already in the correct format
+    formatted_references = []
+    formatted_images = []  # Keep for backward compatibility
     
     for ref in references:
-        if ref.get("is_image"):
-            # Add to images array with full metadata
-            image_data = {
-                "reference_id": ref.get("reference_id", ""),
-                "content": ref.get("description", ""),
-                "file_path": ref.get("file_path", ""),
-                "chunk_id": ref.get("chunk_id", "")
-            }
-            formatted_images.append(image_data)
-        
-        # Add to clean references (reference_id, file_path, and chunk_id)
-        clean_ref = {
+        # Build the grouped reference structure
+        formatted_ref = {
             "reference_id": ref.get("reference_id", ""),
             "file_path": ref.get("file_path", ""),
-            "chunk_id": ref.get("chunk_id", "")
+            "contents": ref.get("contents", []),
+            "images": ref.get("images", []),
+            "entities": ref.get("entities", [])
         }
-        clean_references.append(clean_ref)
+        formatted_references.append(formatted_ref)
+        
+        # Also extract images for backward compatibility with images array
+        for img in ref.get("images", []):
+            image_data = {
+                "reference_id": ref.get("reference_id", ""),
+                "content": img.get("description", ""),
+                "file_path": img.get("file_path", ""),
+                "chunk_id": img.get("chunk_id", ""),
+                "index": img.get("index", 0)
+            }
+            formatted_images.append(image_data)
 
     # Build basic metadata (metadata details will be added by calling functions)
     metadata = {
@@ -2973,7 +2977,7 @@ def convert_to_user_format(
             "relationships": formatted_relationships,
             "chunks": formatted_chunks,
             "images": formatted_images,
-            "references": clean_references,
+            "references": formatted_references,
         },
         "metadata": metadata,
     }
@@ -2983,39 +2987,62 @@ def generate_reference_list_from_chunks(
     chunks: list[dict],
 ) -> tuple[list[dict], list[dict]]:
     """
-    Generate reference list from chunks, assigning a unique reference_id to each chunk.
+    Generate reference list from chunks, grouping by file_path with document-level reference_ids.
 
-    Previously, this function grouped chunks by file_path and assigned one reference_id
-    per file. Now, each chunk gets its own unique reference_id for precise citations.
+    Each unique file_path gets one reference_id. Chunks from the same file are grouped
+    into a 'contents' array with indices for precise citations using format [docId_c_index].
 
     Args:
         chunks: List of chunk dictionaries with file_path and chunk_id information
 
     Returns:
         tuple: (reference_list, updated_chunks_with_reference_ids)
-            - reference_list: List of dicts with reference_id, file_path, and chunk_id
-            - updated_chunks_with_reference_ids: Original chunks with reference_id field added
+            - reference_list: List of dicts with reference_id, file_path, contents[], images[], entities[]
+            - updated_chunks_with_reference_ids: Original chunks with reference_id and content_index fields added
     """
     if not chunks:
         return [], []
 
-    # Assign sequential reference IDs to each chunk (1, 2, 3, ...)
+    # Group chunks by file_path
+    file_path_to_chunks: dict[str, list[dict]] = {}
+    for chunk in chunks:
+        file_path = chunk.get("file_path", "unknown")
+        if file_path not in file_path_to_chunks:
+            file_path_to_chunks[file_path] = []
+        file_path_to_chunks[file_path].append(chunk)
+
+    # Build reference list with document-level grouping
     reference_list = []
     updated_chunks = []
     
-    for i, chunk in enumerate(chunks):
-        chunk_copy = chunk.copy()
-        ref_id = str(i + 1)
+    for doc_index, (file_path, file_chunks) in enumerate(file_path_to_chunks.items()):
+        ref_id = str(doc_index + 1)
         
-        # Assign reference_id to chunk
-        chunk_copy["reference_id"] = ref_id
-        updated_chunks.append(chunk_copy)
+        # Build contents array for this document
+        contents = []
+        for content_index, chunk in enumerate(file_chunks):
+            chunk_copy = chunk.copy()
+            chunk_id = chunk.get("chunk_id", "") or chunk.get("id", "")
+            chunk_text = chunk.get("content", "")
+            
+            # Add reference info to chunk for later use
+            chunk_copy["reference_id"] = ref_id
+            chunk_copy["content_index"] = content_index
+            updated_chunks.append(chunk_copy)
+            
+            contents.append({
+                "index": content_index,
+                "chunk_id": chunk_id,
+                "text": chunk_text
+            })
         
-        # Add to reference list
+        # Create document reference with grouped structure
         reference_list.append({
             "reference_id": ref_id,
-            "file_path": chunk.get("file_path", ""),
-            "chunk_id": chunk.get("chunk_id", "") or chunk.get("id", "")  # Track which chunk this is
+            "file_path": file_path,
+            "contents": contents,
+            "images": [],  # Will be populated by _extract_images_from_chunks
+            "entities": []  # Will be populated by entity linking
         })
 
     return reference_list, updated_chunks

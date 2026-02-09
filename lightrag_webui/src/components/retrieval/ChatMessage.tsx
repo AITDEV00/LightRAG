@@ -97,74 +97,118 @@ export const ChatMessage = ({
     loadKaTeX();
   }, []);
 
-  // Create a mapping from original reference_id to sequential display number (1, 2, 3...)
-  // This makes citations more readable for users
-  const { refIdToDisplayNum, displayNumToRef } = useMemo(() => {
+  // Create a mapping from reference_id to Reference for quick lookup
+  const refIdToReference = useMemo(() => {
     const refs = message.references || []
-    const idToNum: Record<string, number> = {}
-    const numToRef: Record<number, Reference> = {}
-    
-    // Sort references by their original reference_id to maintain consistent ordering
-    const sortedRefs = [...refs].sort((a, b) => 
-      parseInt(a.reference_id) - parseInt(b.reference_id)
-    )
-    
-    sortedRefs.forEach((ref, index) => {
-      const displayNum = index + 1
-      idToNum[ref.reference_id] = displayNum
-      numToRef[displayNum] = ref
+    const idToRef: Record<string, Reference> = {}
+    refs.forEach(ref => {
+      idToRef[ref.reference_id] = ref
     })
-    
-    return { refIdToDisplayNum: idToNum, displayNumToRef: numToRef }
+    return idToRef
   }, [message.references])
 
+  /**
+   * Parse citation key in format [docId_type_index]
+   * Examples: [1_c0], [1_m2], [2_e1]
+   * Returns: { docId, type, index } or null if invalid
+   */
+  const parseCitationKey = (citationKey: string): { docId: string; type: 'c' | 'm' | 'e'; index: number } | null => {
+    // Match pattern: docId_type_index where type is c, m, or e
+    const match = citationKey.match(/^(\d+)_([cme])(\d+)$/)
+    if (!match) return null
+    return {
+      docId: match[1],
+      type: match[2] as 'c' | 'm' | 'e',
+      index: parseInt(match[3], 10)
+    }
+  }
+
+  /**
+   * Get the specific item from a reference based on type and index
+   */
+  const getItemFromReference = (reference: Reference, type: 'c' | 'm' | 'e', index: number) => {
+    switch (type) {
+      case 'c':
+        return reference.contents?.find(c => c.index === index)
+      case 'm':
+        return reference.images?.find(i => i.index === index)
+      case 'e':
+        return reference.entities?.find(e => e.index === index)
+      default:
+        return null
+    }
+  }
+
   // Helper function to render reference with hover tooltip
-  const ReferenceLink = ({ refId, references }: { refId: string; references?: Reference[] }) => {
+  // Now supports new citation format [docId_type_index]
+  const ReferenceLink = ({ citationKey, references }: { citationKey: string; references?: Reference[] }) => {
     if (!references || references.length === 0) {
-      return <sup className="text-blue-600 dark:text-blue-400 font-bold">[{refId}]</sup>
+      return <sup className="text-blue-600 dark:text-blue-400 font-bold">[{citationKey}]</sup>
     }
 
-    const reference = references.find(r => r.reference_id === refId)
+    const parsed = parseCitationKey(citationKey)
+    if (!parsed) {
+      // Fallback for old format [n] - just show as-is
+      return <sup className="text-blue-600 dark:text-blue-400 font-bold">[{citationKey}]</sup>
+    }
+
+    const { docId, type, index } = parsed
+    const reference = refIdToReference[docId]
     if (!reference) {
-      return <sup className="text-blue-600 dark:text-blue-400 font-bold">[{refId}]</sup>
+      return <sup className="text-blue-600 dark:text-blue-400 font-bold">[{citationKey}]</sup>
     }
 
-    // Get the display number for this reference (1, 2, 3 instead of 15, 16, etc.)
-    const displayNum = refIdToDisplayNum[refId] || refId
-
-    // Build preview content - prefer chunk content, fallback to entity info
-    const chunkContent = reference.content?.join('\n\n') || ''
+    const item = getItemFromReference(reference, type, index)
+    
+    // Build preview content based on type
     const previewLength = 400
-    
     let preview = ''
-    let entityInfo = ''
+    let itemLabel = ''
     
-    if (chunkContent) {
-      preview = chunkContent.length > previewLength
-        ? chunkContent.substring(0, previewLength) + '...'
-        : chunkContent
-    } else if (reference.entities && reference.entities.length > 0) {
-      // Show entity information when no chunk content
-      entityInfo = reference.entities.map(e => 
-        `**${e.entity_name}** (${e.entity_type})${e.description ? `: ${e.description.substring(0, 200)}${e.description.length > 200 ? '...' : ''}` : ''}`
-      ).join('\n\n')
-      preview = entityInfo || 'No preview available'
+    if (type === 'c' && item && 'text' in item) {
+      // Content chunk - show chunk_id
+      const chunkId = 'chunk_id' in item ? (item as { chunk_id: string }).chunk_id : `chunk-${index}`
+      itemLabel = chunkId
+      const text = item.text || ''
+      preview = text.length > previewLength ? text.substring(0, previewLength) + '...' : text
+    } else if (type === 'm' && item && 'file_path' in item) {
+      // Image/media - show file_path as label, only show description if available
+      const filePath = (item as { file_path: string }).file_path || `image-${index}`
+      itemLabel = filePath
+      const desc = 'description' in item ? item.description : ''
+      if (desc) {
+        preview = desc.length > previewLength ? desc.substring(0, previewLength) + '...' : desc
+      }
+      // If no description, preview stays empty - file_path is already shown as itemLabel
+    } else if (type === 'e' && item && 'entity_name' in item) {
+      // Entity - only show description if available
+      itemLabel = `${item.entity_name} (${item.entity_type})`
+      if (item.description) {
+        preview = item.description.length > previewLength 
+          ? item.description.substring(0, previewLength) + '...' 
+          : item.description
+      }
+      // If no description, preview stays empty
     } else {
-      preview = 'No preview available'
+      preview = ''
     }
+
+    // Display format: show the full citation key for clarity
+    const displayText = citationKey
 
     return (
       <TooltipProvider delayDuration={200}>
         <Tooltip>
           <TooltipTrigger asChild>
             <sup className="text-blue-600 dark:text-blue-400 font-bold cursor-help hover:underline hover:text-blue-800 dark:hover:text-blue-300">
-              [{displayNum}]
+              [{displayText}]
             </sup>
           </TooltipTrigger>
           <TooltipContent side="top" className="max-w-md">
             <div className="space-y-2">
               <div className="font-semibold text-xs">{reference.file_path}</div>
-              <div className="text-xs whitespace-pre-wrap">{preview}</div>
+              {itemLabel && <div className="text-xs font-medium text-muted-foreground">{itemLabel}</div>}
+              {preview && <div className="text-xs whitespace-pre-wrap">{preview}</div>}
             </div>
           </TooltipContent>
         </Tooltip>
@@ -172,13 +216,13 @@ export const ChatMessage = ({
     )
   }
 
-  // Function to process text and replace [n] with ReferenceLink components
+  // Function to process text and replace [docId_type_index] with ReferenceLink components
   const processTextWithReferences = useCallback((text: string | ReactNode): ReactNode => {
     if (typeof text === 'string') {
-      // Match citation patterns like [1], [2], etc.
+      // Match citation patterns like [1_c0], [1_m2], [2_e1]
       const parts: ReactNode[] = []
       let lastIndex = 0
-      const regex = /\[(\d+)\]/g
+      const regex = /\[(\d+_[cme]\d+)\]/g
       let match
       
       while ((match = regex.exec(text)) !== null) {
@@ -191,7 +235,7 @@ export const ChatMessage = ({
         parts.push(
           <ReferenceLink 
             key={`ref-${match.index}-${match[1]}`} 
-            refId={match[1]} 
+            citationKey={match[1]} 
             references={message.references} 
           />
         )
@@ -395,10 +439,10 @@ export const ChatMessage = ({
                 const { children, ...restProps } = props
                 const text = typeof children === 'string' ? children : children?.toString()
                 
-                // Check if this is a reference link [1], [2], etc.
-                const refMatch = text?.match(/^\[(\d+)\]$/)
+                // Check if this is a reference link [docId_type_index] e.g., [1_c0], [1_m2], [2_e1]
+                const refMatch = text?.match(/^\[(\d+_[cme]\d+)\]$/)
                 if (refMatch && message.references) {
-                  return <ReferenceLink refId={refMatch[1]} references={message.references} />
+                  return <ReferenceLink citationKey={refMatch[1]} references={message.references} />
                 }
                 
                 // Regular superscript

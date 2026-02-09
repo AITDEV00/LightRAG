@@ -106,14 +106,19 @@ class QueryRequest(BaseModel):
         description="If True, includes reference list in responses. Affects /query and /query/stream endpoints. /query/data always includes references.",
     )
 
-    include_chunk_content: Optional[bool] = Field(
-        default=False,
-        description="If True, includes actual chunk text content in references. Only applies when include_references=True. Useful for evaluation and debugging.",
+    include_chunk_text: Optional[bool] = Field(
+        default=True,
+        description="If True, includes chunk text content in references. Set to False to reduce payload size.",
     )
 
-    files_only: Optional[bool] = Field(
-        default=False,
-        description="If True, return only a list of source file paths without LLM generation.",
+    include_image_descriptions: Optional[bool] = Field(
+        default=True,
+        description="If True, includes image descriptions in references. Set to False to reduce payload size.",
+    )
+
+    include_entity_descriptions: Optional[bool] = Field(
+        default=True,
+        description="If True, includes entity descriptions in references. Set to False to reduce payload size.",
     )
 
     stream: Optional[bool] = Field(
@@ -145,7 +150,7 @@ class QueryRequest(BaseModel):
         # Use Pydantic's `.model_dump(exclude_none=True)` to remove None values automatically
         # Exclude API-level parameters that don't belong in QueryParam
         request_data = self.model_dump(
-            exclude_none=True, exclude={"query", "include_chunk_content", "files_only"}
+            exclude_none=True, exclude={"query", "include_chunk_text", "include_image_descriptions", "include_entity_descriptions"}
         )
 
         # Ensure `mode` and `stream` are set explicitly
@@ -154,42 +159,61 @@ class QueryRequest(BaseModel):
         return param
 
 
+class ContentItem(BaseModel):
+    """A content chunk within a document reference."""
+    
+    index: int = Field(description="Index of this content within the document (for citation key)")
+    chunk_id: str = Field(description="Unique identifier for the chunk")
+    text: str = Field(default="", description="Text content of the chunk")
+
+
+class ImageItem(BaseModel):
+    """An image within a document reference."""
+    
+    index: int = Field(description="Index of this image within the document (for citation key)")
+    file_path: str = Field(description="Path to the image file")
+    description: Optional[str] = Field(default=None, description="Description of the image")
+
+
 class EntityInfo(BaseModel):
     """Entity information for reference hover display."""
     
+    index: int = Field(description="Index of this entity within the document (for citation key)")
     entity_name: str = Field(description="Name of the entity")
     entity_type: str = Field(description="Type/category of the entity")
     description: str = Field(default="", description="Description of the entity")
 
 
 class ReferenceItem(BaseModel):
+    """A document reference with grouped contents, images, and entities.
+    
+    Citations use format [docId_type_index] where:
+    - docId: reference_id (1, 2, 3...)
+    - type: c=content, m=media/image, e=entity
+    - index: item index within that type
+    
+    Examples: [1_c0], [1_m2], [2_e1]
+    """
 
-    """A single reference item in query responses."""
-
-
-    reference_id: str = Field(description="Unique reference identifier")
+    reference_id: str = Field(description="Document reference identifier (1, 2, 3...)")
     file_path: str = Field(description="Path to the source file")
-    chunk_id: Optional[str] = Field(
+    contents: Optional[List[ContentItem]] = Field(
         default=None,
-        description="Unique identifier for the specific chunk",
+        description="List of content chunks from this document",
     )
-    content: Optional[List[str]] = Field(
+    images: Optional[List[ImageItem]] = Field(
         default=None,
-        description="List of chunk contents from this file (only present when include_chunk_content=True)",
+        description="List of images from this document",
     )
     entities: Optional[List[EntityInfo]] = Field(
         default=None,
-        description="List of entities associated with this reference (for hover display)",
+        description="List of entities associated with this document",
     )
 
 
 class QueryResponse(BaseModel):
     response: str = Field(
         description="The generated response",
-    )
-    files: Optional[List[str]] = Field(
-        default=None,
-        description="List of source file paths (when files_only=True).",
     )
     references: Optional[List[ReferenceItem]] = Field(
         default=None,
@@ -246,6 +270,49 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
         return result
 
+    def _filter_reference_data(
+        references: List[Dict[str, Any]],
+        include_chunk_text: bool = True,
+        include_image_descriptions: bool = True,
+        include_entity_descriptions: bool = True
+    ) -> List[Dict[str, Any]]:
+        """Filter reference data based on granular include options."""
+        filtered = []
+        for ref in references:
+            filtered_ref = {
+                "reference_id": ref.get("reference_id"),
+                "file_path": ref.get("file_path"),
+            }
+            # Handle contents - optionally strip text
+            if "contents" in ref and ref["contents"]:
+                if include_chunk_text:
+                    filtered_ref["contents"] = ref["contents"]
+                else:
+                    filtered_ref["contents"] = [
+                        {"index": c.get("index"), "chunk_id": c.get("chunk_id")} 
+                        for c in ref["contents"]
+                    ]
+            # Handle images - optionally strip descriptions
+            if "images" in ref and ref["images"]:
+                if include_image_descriptions:
+                    filtered_ref["images"] = ref["images"]
+                else:
+                    filtered_ref["images"] = [
+                        {"index": i.get("index"), "file_path": i.get("file_path")} 
+                        for i in ref["images"]
+                    ]
+            # Handle entities - optionally strip descriptions
+            if "entities" in ref and ref["entities"]:
+                if include_entity_descriptions:
+                    filtered_ref["entities"] = ref["entities"]
+                else:
+                    filtered_ref["entities"] = [
+                        {"index": e.get("index"), "entity_name": e.get("entity_name"), "entity_type": e.get("entity_type")} 
+                        for e in ref["entities"]
+                    ]
+            filtered.append(filtered_ref)
+        return filtered
+
     @router.post(
         "/query",
         response_model=QueryResponse,
@@ -269,10 +336,17 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                         "properties": {
                                             "reference_id": {"type": "string"},
                                             "file_path": {"type": "string"},
-                                            "content": {
+                                            "contents": {
                                                 "type": "array",
-                                                "items": {"type": "string"},
-                                                "description": "List of chunk contents from this file (only included when include_chunk_content=True)",
+                                                "description": "List of content chunks (text stripped when include_chunk_text=False)",
+                                            },
+                                            "images": {
+                                                "type": "array",
+                                                "description": "List of images (descriptions stripped when include_image_descriptions=False)",
+                                            },
+                                            "entities": {
+                                                "type": "array",
+                                                "description": "List of entities (descriptions stripped when include_entity_descriptions=False)",
                                             },
                                         },
                                     },
@@ -299,25 +373,45 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                     ],
                                 },
                             },
-                            "with_chunk_content": {
-                                "summary": "Response with chunk content",
-                                "description": "Example response when include_references=True and include_chunk_content=True. Note: content is an array of chunks from the same file.",
+                            "with_full_reference_data": {
+                                "summary": "Response with full reference data",
+                                "description": "Example response when all include_* options are True (default). Includes full chunk text, image descriptions, and entity descriptions.",
                                 "value": {
-                                    "response": "Artificial Intelligence (AI) is a branch of computer science that aims to create intelligent machines capable of performing tasks that typically require human intelligence, such as learning, reasoning, and problem-solving.",
+                                    "response": "Artificial Intelligence (AI) is a branch of computer science [1_c0].",
                                     "references": [
                                         {
                                             "reference_id": "1",
                                             "file_path": "/documents/ai_overview.pdf",
-                                            "content": [
-                                                "Artificial Intelligence (AI) represents a transformative field in computer science focused on creating systems that can perform tasks requiring human-like intelligence. These tasks include learning from experience, understanding natural language, recognizing patterns, and making decisions.",
-                                                "AI systems can be categorized into narrow AI, which is designed for specific tasks, and general AI, which aims to match human cognitive abilities across a wide range of domains.",
+                                            "contents": [
+                                                {"index": 0, "chunk_id": "chunk-abc123", "text": "AI represents a transformative field..."}
+                                            ],
+                                            "images": [
+                                                {"index": 0, "file_path": "images/ai_diagram.jpg", "description": "Diagram showing AI categories"}
+                                            ],
+                                            "entities": [
+                                                {"index": 0, "entity_name": "AI", "entity_type": "technology", "description": "Artificial Intelligence..."}
                                             ],
                                         },
+                                    ],
+                                },
+                            },
+                            "with_minimal_reference_data": {
+                                "summary": "Response with minimal reference data",
+                                "description": "Example response when include_chunk_text, include_image_descriptions, and include_entity_descriptions are all False. Strips text/descriptions to reduce payload.",
+                                "value": {
+                                    "response": "Artificial Intelligence (AI) is a branch of computer science [1_c0].",
+                                    "references": [
                                         {
-                                            "reference_id": "2",
-                                            "file_path": "/documents/machine_learning.txt",
-                                            "content": [
-                                                "Machine learning is a subset of AI that enables computers to learn and improve from experience without being explicitly programmed. It focuses on the development of algorithms that can access data and use it to learn for themselves."
+                                            "reference_id": "1",
+                                            "file_path": "/documents/ai_overview.pdf",
+                                            "contents": [
+                                                {"index": 0, "chunk_id": "chunk-abc123"}
+                                            ],
+                                            "images": [
+                                                {"index": 0, "file_path": "images/ai_diagram.jpg"}
+                                            ],
+                                            "entities": [
+                                                {"index": 0, "entity_name": "AI", "entity_type": "technology"}
                                             ],
                                         },
                                     ],
@@ -461,60 +555,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             # Force stream=False for /query endpoint regardless of include_references setting
             param.stream = False
 
-            if request.files_only:
-                data_result = await rag.aquery_data(request.query, param=param)
-                data = data_result.get("data", {}) if isinstance(data_result, dict) else {}
-                files = _collect_file_paths(data)
-                references = data.get("references", [])
-                if request.include_references and request.include_chunk_content:
-                    chunks = data.get("chunks", [])
-                    entities = data.get("entities", [])
-                    
-                    ref_id_to_content = {}
-                    for chunk in chunks:
-                        ref_id = chunk.get("reference_id", "")
-                        content = chunk.get("content", "")
-                        if ref_id and content:
-                            ref_id_to_content.setdefault(ref_id, []).append(content)
-
-                    # Create a mapping from reference_id to entities
-                    ref_id_to_entities = {}
-                    for entity in entities:
-                        ref_ids = entity.get("reference_ids", [])
-                        for ref_id in ref_ids:
-                            if ref_id:
-                                entity_info = {
-                                    "entity_name": entity.get("entity_name", ""),
-                                    "entity_type": entity.get("entity_type", ""),
-                                    "description": entity.get("description", "")
-                                }
-                                ref_id_to_entities.setdefault(ref_id, []).append(entity_info)
-
-                    enriched_references = []
-                    for ref in references:
-                        ref_copy = ref.copy()
-                        ref_id = ref.get("reference_id", "")
-                        if ref_id in ref_id_to_content:
-                            ref_copy["content"] = ref_id_to_content[ref_id]
-                        if ref_id in ref_id_to_entities:
-                            ref_copy["entities"] = ref_id_to_entities[ref_id]
-                        enriched_references.append(ref_copy)
-                    references = enriched_references
-
-
-
-                return QueryResponse(
-                    response=f"Found {len(files)} documents.",
-                    files=files,
-                    references=references if request.include_references else None,
-                )
-
-            # Unified approach: always use aquery_llm for both cases
+            # Unified approach: always use aquery_llm
             result = await rag.aquery_llm(request.query, param=param)
 
             # Extract LLM response and references from unified result
             llm_response = result.get("llm_response", {})
             data = result.get("data", {})
+            # References now use grouped document structure with contents[], images[], entities[]
+            # No enrichment needed - the structure is already complete from convert_to_user_format
             references = data.get("references", [])
 
             # Get the non-streaming response content
@@ -522,69 +570,20 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
             if not response_content:
                 response_content = "No relevant context found for the query."
 
-            # Enrich references with chunk content and entity info if requested
-            if request.include_references and request.include_chunk_content:
-                chunks = data.get("chunks", [])
-                entities = data.get("entities", [])
-                
-                # Create a mapping from reference_id to chunk content
-                ref_id_to_content = {}
-                for chunk in chunks:
-                    ref_id = chunk.get("reference_id", "")
-                    content = chunk.get("content", "")
-                    if ref_id and content:
-                        ref_id_to_content.setdefault(ref_id, []).append(content)
-
-                # Create a mapping from reference_id to entities
-                ref_id_to_entities = {}
-                for entity in entities:
-                    ref_ids = entity.get("reference_ids", [])
-                    for ref_id in ref_ids:
-                        if ref_id:
-                            entity_info = {
-                                "entity_name": entity.get("entity_name", ""),
-                                "entity_type": entity.get("entity_type", ""),
-                                "description": entity.get("description", "")
-                            }
-                            ref_id_to_entities.setdefault(ref_id, []).append(entity_info)
-                
-                # Create a mapping from reference_id to image descriptions
-                images = data.get("images", [])
-                ref_id_to_image_content = {}
-                for image in images:
-                    ref_id = image.get("reference_id", "")
-                    content = image.get("content", "")
-                    if ref_id and content:
-                        ref_id_to_image_content[ref_id] = content
-                
-                # Add content and entities to references
-                enriched_references = []
-                for ref in references:
-                    ref_copy = ref.copy()
-                    ref_id = ref.get("reference_id", "")
-                    
-                    # Add chunk content if available (already a list)
-                    if ref_id in ref_id_to_content:
-                        ref_copy["content"] = ref_id_to_content[ref_id]
-                    # Add image description if available (wrap in list)
-                    elif ref_id in ref_id_to_image_content:
-                        ref_copy["content"] = [ref_id_to_image_content[ref_id]]
-                    
-                    # Add entities if available
-                    if ref_id in ref_id_to_entities:
-                        ref_copy["entities"] = ref_id_to_entities[ref_id]
-                    enriched_references.append(ref_copy)
-                references = enriched_references
-
-
-
             # Return response with or without references based on request
             if request.include_references:
+                # Filter reference data based on granular settings
+                references = _filter_reference_data(
+                    references,
+                    include_chunk_text=request.include_chunk_text,
+                    include_image_descriptions=request.include_image_descriptions,
+                    include_entity_descriptions=request.include_entity_descriptions
+                )
                 return QueryResponse(
-                    response=response_content, references=references, files=None
+                    response=response_content, references=references
                 )
             else:
-                return QueryResponse(response=response_content, references=None, files=None)
+                return QueryResponse(response=response_content, references=None)
         except Exception as e:
             trace_exception(e)
             raise HTTPException(status_code=500, detail=str(e))
@@ -609,10 +608,15 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                                 "description": "Multiple NDJSON lines when stream=True and include_references=True. First line contains references, subsequent lines contain response chunks.",
                                 "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf"}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt"}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence, such as learning,"}\n{"response": " reasoning, and problem-solving."}',
                             },
-                            "streaming_with_chunk_content": {
-                                "summary": "Streaming mode with chunk content (stream=true, include_chunk_content=true)",
-                                "description": "Multiple NDJSON lines when stream=True, include_references=True, and include_chunk_content=True. First line contains references with content arrays (one file may have multiple chunks), subsequent lines contain response chunks.",
-                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "content": ["Artificial Intelligence (AI) represents a transformative field...", "AI systems can be categorized into narrow AI and general AI..."]}, {"reference_id": "2", "file_path": "/documents/ml_basics.txt", "content": ["Machine learning is a subset of AI that enables computers to learn..."]}]}\n{"response": "Artificial Intelligence (AI) is a branch of computer science"}\n{"response": " that aims to create intelligent machines capable of performing"}\n{"response": " tasks that typically require human intelligence."}',
+                            "streaming_with_full_data": {
+                                "summary": "Streaming mode with full reference data (all include_* options true)",
+                                "description": "Multiple NDJSON lines with full reference details including chunk text, image descriptions, and entity descriptions.",
+                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "contents": [{"index": 0, "chunk_id": "chunk-abc", "text": "AI represents..."}], "images": [], "entities": [{"index": 0, "entity_name": "AI", "entity_type": "technology", "description": "..."}]}]}\n{"response": "Artificial Intelligence [1_c0]..."}',
+                            },
+                            "streaming_with_minimal_data": {
+                                "summary": "Streaming mode with minimal reference data (all include_* options false)",
+                                "description": "Multiple NDJSON lines with stripped reference data (no text/descriptions) to reduce payload size.",
+                                "value": '{"references": [{"reference_id": "1", "file_path": "/documents/ai_overview.pdf", "contents": [{"index": 0, "chunk_id": "chunk-abc"}], "images": [], "entities": [{"index": 0, "entity_name": "AI", "entity_type": "technology"}]}]}\n{"response": "Artificial Intelligence [1_c0]..."}',
                             },
                             "streaming_without_references": {
                                 "summary": "Streaming mode without references (stream=true)",
@@ -807,70 +811,22 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
 
             async def stream_generator():
                 # Extract references and LLM response from unified result
+                # References now use grouped document structure with contents[], images[], entities[]
+                # No enrichment needed - the structure is already complete from convert_to_user_format
                 references = result.get("data", {}).get("references", [])
                 llm_response = result.get("llm_response", {})
-
-                # Enrich references with chunk content and entity info if requested
-                if request.include_references and request.include_chunk_content:
-                    data = result.get("data", {})
-                    chunks = data.get("chunks", [])
-                    entities = data.get("entities", [])
-                    
-                    # Create a mapping from reference_id to chunk content
-                    ref_id_to_content = {}
-                    for chunk in chunks:
-                        ref_id = chunk.get("reference_id", "")
-                        content = chunk.get("content", "")
-                        if ref_id and content:
-                            ref_id_to_content.setdefault(ref_id, []).append(content)
-
-                    # Create a mapping from reference_id to entities
-                    ref_id_to_entities = {}
-                    for entity in entities:
-                        ref_ids = entity.get("reference_ids", [])
-                        for ref_id in ref_ids:
-                            if ref_id:
-                                entity_info = {
-                                    "entity_name": entity.get("entity_name", ""),
-                                    "entity_type": entity.get("entity_type", ""),
-                                    "description": entity.get("description", "")
-                                }
-                                ref_id_to_entities.setdefault(ref_id, []).append(entity_info)
-
-                    # Create a mapping from reference_id to image descriptions
-                    images = data.get("images", [])
-                    ref_id_to_image_content = {}
-                    for image in images:
-                        ref_id = image.get("reference_id", "")
-                        content = image.get("content", "")
-                        if ref_id and content:
-                            ref_id_to_image_content[ref_id] = content
-
-                    # Add content and entities to references
-                    enriched_references = []
-                    for ref in references:
-                        ref_copy = ref.copy()
-                        ref_id = ref.get("reference_id", "")
-                        
-                        # Add chunk content if available (already a list)
-                        if ref_id in ref_id_to_content:
-                            ref_copy["content"] = ref_id_to_content[ref_id]
-                        # Add image description if available (wrap in list)
-                        elif ref_id in ref_id_to_image_content:
-                            ref_copy["content"] = [ref_id_to_image_content[ref_id]]
-                        
-                        # Add entities if available
-                        if ref_id in ref_id_to_entities:
-                            ref_copy["entities"] = ref_id_to_entities[ref_id]
-                        enriched_references.append(ref_copy)
-                    references = enriched_references
-                
-
 
                 if llm_response.get("is_streaming"):
                     # Streaming mode: send references first, then stream response chunks
                     if request.include_references:
-                        yield f"{json.dumps({'references': references})}\n"
+                        # Filter reference data based on granular settings
+                        refs_to_send = _filter_reference_data(
+                            references,
+                            include_chunk_text=request.include_chunk_text,
+                            include_image_descriptions=request.include_image_descriptions,
+                            include_entity_descriptions=request.include_entity_descriptions
+                        )
+                        yield f"{json.dumps({'references': refs_to_send})}\n"
 
                     response_stream = llm_response.get("response_iterator")
                     if response_stream:
@@ -890,7 +846,14 @@ def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
                     # Create complete response object
                     complete_response = {"response": response_content}
                     if request.include_references:
-                        complete_response["references"] = references
+                        # Filter reference data based on granular settings
+                        refs_to_send = _filter_reference_data(
+                            references,
+                            include_chunk_text=request.include_chunk_text,
+                            include_image_descriptions=request.include_image_descriptions,
+                            include_entity_descriptions=request.include_entity_descriptions
+                        )
+                        complete_response["references"] = refs_to_send
 
                     yield f"{json.dumps(complete_response)}\n"
 
