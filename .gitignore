@@ -72,6 +72,11 @@ download_models_hf.py
 
 # Cline files
 memory-bank
+.claude/CLAUDE.md
+.claude/
+
+# Claude Code
+CLAUDE.md
 
 # Multiuser files
 /multiuser/*.db

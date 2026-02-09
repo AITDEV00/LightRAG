@@ -47,6 +47,31 @@ else np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
 **Location**: Neo4j storage finalization
 **Impact**: Prevents application shutdown failures
 
+### 6. Async Generator Lock Management (CRITICAL)
+**Pattern**: Never hold locks across async generator yields - create snapshots instead
+**Issue**: Holding locks while yielding causes deadlock when consumers need the same lock
+**Location**: `lightrag/tools/migrate_llm_cache.py` - `stream_default_caches_json`
+**Solution**: Create snapshot of data while holding lock, release lock, then iterate over snapshot
+```python
+# WRONG - Deadlock prone:
+async with storage._storage_lock:
+    for key, value in storage._data.items():
+        batch[key] = value
+        if len(batch) >= batch_size:
+            yield batch  # Lock still held!
+
+# CORRECT - Snapshot approach:
+async with storage._storage_lock:
+    matching_items = [(k, v) for k, v in storage._data.items() if condition]
+# Lock released here
+for key, value in matching_items:
+    batch[key] = value
+    if len(batch) >= batch_size:
+        yield batch  # No lock held
+```
+**Impact**: Prevents deadlocks in Json→Json migrations and similar scenarios where source/target share locks
+**Applicable To**: Any async generator that needs to access shared resources while yielding
+
 ## Architecture Patterns
 
 ### 1. Dependency Injection
@@ -101,6 +126,31 @@ else np.frombuffer(base64.b64decode(dp.embedding), dtype=np.float32)
 3. **Use appropriate data structures** - Match structure to access patterns
 4. **Implement caching strategically** - Cache expensive operations
 5. **Monitor memory usage** - Prevent memory leaks
+
+### 5. Testing Workflow (CRITICAL)
+**Pattern**: All tests must use pytest markers for proper CI/CD execution
+**Test Categories**:
+- **Offline Tests**: Use `@pytest.mark.offline` - No external dependencies (runs in CI)
+- **Integration Tests**: Use `@pytest.mark.integration` - Requires databases/APIs (skipped by default)
+
+**Commands**:
+- `pytest tests/ -m offline -v` - CI default (~3 seconds for 21 tests)
+- `pytest tests/ --run-integration -v` - Full test suite (all 46 tests)
+
+**Best Practices**:
+1. **Prefer offline tests** - Use mocks for LLM, embeddings, databases
+2. **Mock external dependencies** - AsyncMock for async functions
+3. **Test isolation** - Each test should be independent
+4. **Documentation** - Add docstrings explaining purpose and scope
+
+**Configuration**:
+- `tests/pytest.ini` - Marker definitions and test discovery
+- `tests/conftest.py` - Fixtures and custom options
+- `.github/workflows/tests.yml` - CI/CD workflow (Python 3.10/3.11/3.12)
+
+**Documentation**: See `memory-bank/testing-guidelines.md` for complete testing guidelines
+
+**Impact**: Ensures all tests run reliably in CI without external services while maintaining comprehensive integration test coverage for local development
 
 ## Technology Stack Intelligence
 

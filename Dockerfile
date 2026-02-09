@@ -26,9 +26,9 @@ WORKDIR /app
 # Install system deps (Rust is required by some wheels)
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-        curl \
-        build-essential \
-        pkg-config \
+    curl \
+    build-essential \
+    pkg-config \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 
@@ -115,8 +115,8 @@ ENV INPUT_DIR=/app/data/inputs
 
 # --- NEW: Copy the Manager Script ---
 # Ensure 'manager_sqlite.py' is in the same directory where you run 'docker build'
-COPY multiuser/manager.py ./multiuser/manager.py
-# COPY multiuser ./multiuser
+# Copy the entire multiuser directory
+COPY multiuser ./multiuser
 
 # --- NEW: Expose Manager Port ---
 EXPOSE 8000

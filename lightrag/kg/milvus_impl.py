@@ -6,7 +6,7 @@ import numpy as np
 from lightrag.utils import logger, compute_mdhash_id
 from ..base import BaseVectorStorage
 from ..constants import DEFAULT_MAX_FILE_PATH_LENGTH
-from ..kg.shared_storage import get_data_init_lock, get_storage_lock
+from ..kg.shared_storage import get_data_init_lock
 import pipmaster as pm
 
 if not pm.is_installed("pymilvus"):
@@ -934,6 +934,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
                 raise
 
     def __post_init__(self):
+        self._validate_embedding_func()
         # Check for MILVUS_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all Milvus storage instances
         milvus_workspace = os.environ.get("MILVUS_WORKSPACE")
@@ -941,7 +942,7 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = milvus_workspace.strip()
             logger.info(
-                f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MILVUS_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -961,8 +962,8 @@ class MilvusVectorDBStorage(BaseVectorStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
-            self.workspace = "_"
 
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
@@ -1351,21 +1352,20 @@ class MilvusVectorDBStorage(BaseVectorStorage):
             - On success: {"status": "success", "message": "data dropped"}
             - On failure: {"status": "error", "message": "<error details>"}
         """
-        async with get_storage_lock():
-            try:
-                # Drop the collection and recreate it
-                if self._client.has_collection(self.final_namespace):
-                    self._client.drop_collection(self.final_namespace)
+        try:
+            # Drop the collection and recreate it
+            if self._client.has_collection(self.final_namespace):
+                self._client.drop_collection(self.final_namespace)
 
-                # Recreate the collection
-                self._create_collection_if_not_exist()
+            # Recreate the collection
+            self._create_collection_if_not_exist()
 
-                logger.info(
-                    f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"
-                )
-                return {"status": "success", "message": "data dropped"}
-            except Exception as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping Milvus collection {self.namespace}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+            logger.info(
+                f"[{self.workspace}] Process {os.getpid()} drop Milvus collection {self.namespace}"
+            )
+            return {"status": "success", "message": "data dropped"}
+        except Exception as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping Milvus collection {self.namespace}: {e}"
+            )
+            return {"status": "error", "message": str(e)}

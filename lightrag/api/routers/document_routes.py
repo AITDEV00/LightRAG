@@ -3,14 +3,15 @@ This module contains all document-related routes for the LightRAG API.
 """
 
 import asyncio
+from functools import lru_cache
 from lightrag.utils import logger, get_pinyin_sort_key
 import aiofiles
 import shutil
 import traceback
-import pipmaster as pm
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Literal
+from io import BytesIO
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -23,9 +24,31 @@ from pydantic import BaseModel, Field, field_validator
 
 from lightrag import LightRAG
 from lightrag.base import DeletionResult, DocProcessingStatus, DocStatus
-from lightrag.utils import generate_track_id
+from lightrag.utils import (
+    generate_track_id,
+    compute_mdhash_id,
+    sanitize_text_for_encoding,
+)
 from lightrag.api.utils_api import get_combined_auth_dependency
 from ..config import global_args
+
+
+@lru_cache(maxsize=1)
+def _is_docling_available() -> bool:
+    """Check if docling is available (cached check).
+
+    This function uses lru_cache to avoid repeated import attempts.
+    The result is cached after the first call.
+
+    Returns:
+        bool: True if docling is available, False otherwise
+    """
+    try:
+        import docling  # noqa: F401  # type: ignore[import-not-found]
+
+        return True
+    except ImportError:
+        return False
 
 
 # Function to format datetime to ISO format string with timezone information
@@ -140,7 +163,7 @@ class ReprocessResponse(BaseModel):
     Attributes:
         status: Status of the reprocessing operation
         message: Message describing the operation result
-        track_id: Tracking ID for monitoring reprocessing progress
+        track_id: Always empty string. Reprocessed documents retain their original track_id.
     """
 
     status: Literal["reprocessing_started"] = Field(
@@ -148,7 +171,8 @@ class ReprocessResponse(BaseModel):
     )
     message: str = Field(description="Human-readable message describing the operation")
     track_id: str = Field(
-        description="Tracking ID for monitoring reprocessing progress"
+        default="",
+        description="Always empty string. Reprocessed documents retain their original track_id from initial upload.",
     )
 
     class Config:
@@ -156,7 +180,7 @@ class ReprocessResponse(BaseModel):
             "example": {
                 "status": "reprocessing_started",
                 "message": "Reprocessing of failed documents has been initiated in background",
-                "track_id": "retry_20250729_170612_def456",
+                "track_id": "",
             }
         }
 
@@ -745,6 +769,7 @@ class DocumentManager:
         supported_extensions: tuple = (
             ".txt",
             ".md",
+            ".mdx",  # MDX (Markdown + JSX)
             ".pdf",
             ".docx",
             ".pptx",
@@ -879,7 +904,6 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
     Returns:
         str: Unique filename (may have numeric suffix added)
     """
-    from pathlib import Path
     import time
 
     original_path = Path(original_name)
@@ -900,6 +924,270 @@ def get_unique_filename_in_enqueued(target_dir: Path, original_name: str) -> str
     # Fallback with timestamp if all 999 slots are taken
     timestamp = int(time.time())
     return f"{base_name}_{timestamp}{extension}"
+
+
+# Document processing helper functions (synchronous)
+# These functions run in thread pool via asyncio.to_thread() to avoid blocking the event loop
+
+
+def _convert_with_docling(file_path: Path) -> str:
+    """Convert document using docling (synchronous).
+
+    Args:
+        file_path: Path to the document file
+
+    Returns:
+        str: Extracted markdown content
+    """
+    from docling.document_converter import DocumentConverter  # type: ignore
+
+    converter = DocumentConverter()
+    result = converter.convert(file_path)
+    return result.document.export_to_markdown()
+
+
+def _extract_pdf_pypdf(file_bytes: bytes, password: str = None) -> str:
+    """Extract PDF content using pypdf (synchronous).
+
+    Args:
+        file_bytes: PDF file content as bytes
+        password: Optional password for encrypted PDFs
+
+    Returns:
+        str: Extracted text content
+
+    Raises:
+        Exception: If PDF is encrypted and password is incorrect or missing
+    """
+    from pypdf import PdfReader  # type: ignore
+
+    pdf_file = BytesIO(file_bytes)
+    reader = PdfReader(pdf_file)
+
+    # Check if PDF is encrypted
+    if reader.is_encrypted:
+        if not password:
+            raise Exception("PDF is encrypted but no password provided")
+
+        decrypt_result = reader.decrypt(password)
+        if decrypt_result == 0:
+            raise Exception("Incorrect PDF password")
+
+    # Extract text from all pages
+    content = ""
+    for page in reader.pages:
+        content += page.extract_text() + "\n"
+
+    return content
+
+
+def _extract_docx(file_bytes: bytes) -> str:
+    """Extract DOCX content including tables in document order (synchronous).
+
+    Args:
+        file_bytes: DOCX file content as bytes
+
+    Returns:
+        str: Extracted text content with tables in their original positions.
+             Tables are separated from paragraphs with blank lines for clarity.
+    """
+    from docx import Document  # type: ignore
+    from docx.table import Table  # type: ignore
+    from docx.text.paragraph import Paragraph  # type: ignore
+
+    docx_file = BytesIO(file_bytes)
+    doc = Document(docx_file)
+
+    def escape_cell(cell_value: str | None) -> str:
+        """Escape characters that would break tab-delimited layout.
+
+        Escape order is critical: backslashes first, then tabs/newlines.
+        This prevents double-escaping issues.
+
+        Args:
+            cell_value: The cell value to escape (can be None or str)
+
+        Returns:
+            str: Escaped cell value safe for tab-delimited format
+        """
+        if cell_value is None:
+            return ""
+        text = str(cell_value)
+        # CRITICAL: Escape backslash first to avoid double-escaping
+        return (
+            text.replace("\\", "\\\\")  # Must be first: \ -> \\
+            .replace("\t", "&emsp;&emsp;")  # Tab -> \t (visible)
+            .replace("\r\n", "<br>")  # Windows newline -> \n
+            .replace("\r", "<br>")  # Mac newline -> \n
+            .replace("\n", "<br>")  # Unix newline -> \n
+        )
+
+    content_parts = []
+    in_table = False  # Track if we're currently processing a table
+
+    # Iterate through all body elements in document order
+    for element in doc.element.body:
+        # Check if element is a paragraph
+        if element.tag.endswith("p"):
+            # If coming out of a table, add blank line after table
+            if in_table:
+                content_parts.append("")  # Blank line after table
+                in_table = False
+
+            paragraph = Paragraph(element, doc)
+            text = paragraph.text
+            # Always append to preserve document spacing (including blank paragraphs)
+            content_parts.append(text)
+
+        # Check if element is a table
+        elif element.tag.endswith("tbl"):
+            # Add blank line before table (if content exists)
+            if content_parts and not in_table:
+                content_parts.append("")  # Blank line before table
+
+            in_table = True
+            table = Table(element, doc)
+            for row in table.rows:
+                row_text = []
+                for cell in row.cells:
+                    cell_text = cell.text
+                    # Escape special characters to preserve tab-delimited structure
+                    row_text.append(escape_cell(cell_text))
+                # Only add row if at least one cell has content
+                if any(cell for cell in row_text):
+                    content_parts.append("\t".join(row_text))
+
+    return "\n".join(content_parts)
+
+
+def _extract_pptx(file_bytes: bytes) -> str:
+    """Extract PPTX content (synchronous).
+
+    Args:
+        file_bytes: PPTX file content as bytes
+
+    Returns:
+        str: Extracted text content
+    """
+    from pptx import Presentation  # type: ignore
+
+    pptx_file = BytesIO(file_bytes)
+    prs = Presentation(pptx_file)
+    content = ""
+    for slide in prs.slides:
+        for shape in slide.shapes:
+            if hasattr(shape, "text"):
+                content += shape.text + "\n"
+    return content
+
+
+def _extract_xlsx(file_bytes: bytes) -> str:
+    """Extract XLSX content in tab-delimited format with clear sheet separation.
+
+    This function processes Excel workbooks and converts them to a structured text format
+    suitable for LLM prompts and RAG systems. Each sheet is clearly delimited with
+    separator lines, and special characters are escaped to preserve the tab-delimited structure.
+
+    Features:
+    - Each sheet is wrapped with '====================' separators for visual distinction
+    - Special characters (tabs, newlines, backslashes) are escaped to prevent structure corruption
+    - Column alignment is preserved across all rows to maintain tabular structure
+    - Empty rows are preserved as blank lines to maintain row structure
+    - Uses sheet.max_column to determine column width efficiently
+
+    Args:
+        file_bytes: XLSX file content as bytes
+
+    Returns:
+        str: Extracted text content with all sheets in tab-delimited format.
+             Format: Sheet separators, sheet name, then tab-delimited rows.
+
+    Example output:
+        ==================== Sheet: Data ====================
+        Name\tAge\tCity
+        Alice\t30\tNew York
+        Bob\t25\tLondon
+
+        ==================== Sheet: Summary ====================
+        Total\t2
+        ====================
+    """
+    from openpyxl import load_workbook  # type: ignore
+
+    xlsx_file = BytesIO(file_bytes)
+    wb = load_workbook(xlsx_file)
+
+    def escape_cell(cell_value: str | int | float | None) -> str:
+        """Escape characters that would break tab-delimited layout.
+
+        Escape order is critical: backslashes first, then tabs/newlines.
+        This prevents double-escaping issues.
+
+        Args:
+            cell_value: The cell value to escape (can be None, str, int, or float)
+
+        Returns:
+            str: Escaped cell value safe for tab-delimited format
+        """
+        if cell_value is None:
+            return ""
+        text = str(cell_value)
+        # CRITICAL: Escape backslash first to avoid double-escaping
+        return (
+            text.replace("\\", "\\\\")  # Must be first: \ -> \\
+            .replace("\t", "\\t")  # Tab -> \t (visible)
+            .replace("\r\n", "\\n")  # Windows newline -> \n
+            .replace("\r", "\\n")  # Mac newline -> \n
+            .replace("\n", "\\n")  # Unix newline -> \n
+        )
+
+    def escape_sheet_title(title: str) -> str:
+        """Escape sheet title to prevent formatting issues in separators.
+
+        Args:
+            title: Original sheet title
+
+        Returns:
+            str: Sanitized sheet title with tabs/newlines replaced
+        """
+        return str(title).replace("\n", " ").replace("\t", " ").replace("\r", " ")
+
+    content_parts: list[str] = []
+    sheet_separator = "=" * 20
+
+    for idx, sheet in enumerate(wb):
+        if idx > 0:
+            content_parts.append("")  # Blank line between sheets for readability
+
+        # Escape sheet title to handle edge cases with special characters
+        safe_title = escape_sheet_title(sheet.title)
+        content_parts.append(f"{sheet_separator} Sheet: {safe_title} {sheet_separator}")
+
+        # Use sheet.max_column to get the maximum column width directly
+        max_columns = sheet.max_column if sheet.max_column else 0
+
+        # Extract rows with consistent width to preserve column alignment
+        for row in sheet.iter_rows(values_only=True):
+            row_parts = []
+
+            # Build row up to max_columns width
+            for idx in range(max_columns):
+                if idx < len(row):
+                    row_parts.append(escape_cell(row[idx]))
+                else:
+                    row_parts.append("")  # Pad short rows
+
+            # Check if row is completely empty
+            if all(part == "" for part in row_parts):
+                # Preserve empty rows as blank lines (maintains row structure)
+                content_parts.append("")
+            else:
+                # Join all columns to maintain consistent column count
+                content_parts.append("\t".join(row_parts))
+
+    # Final separator for symmetry (makes parsing easier)
+    content_parts.append(sheet_separator)
+    return "\n".join(content_parts)
 
 
 async def pipeline_enqueue_file(
@@ -981,6 +1269,7 @@ async def pipeline_enqueue_file(
                 case (
                     ".txt"
                     | ".md"
+                    | ".mdx"
                     | ".html"
                     | ".htm"
                     | ".tex"
@@ -1072,87 +1361,28 @@ async def pipeline_enqueue_file(
 
                 case ".pdf":
                     try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
+                        # Try DOCLING first if configured and available
+                        if (
+                            global_args.document_loading_engine == "DOCLING"
+                            and _is_docling_available()
+                        ):
+                            content = await asyncio.to_thread(
+                                _convert_with_docling, file_path
+                            )
                         else:
-                            if not pm.is_installed("pypdf2"):  # type: ignore
-                                pm.install("pypdf2")
-                            if not pm.is_installed("pycryptodome"):  # type: ignore
-                                pm.install("pycryptodome")
-                            from PyPDF2 import PdfReader  # type: ignore
-                            from io import BytesIO
-
-                            pdf_file = BytesIO(file)
-                            reader = PdfReader(pdf_file)
-
-                            # Check if PDF is encrypted
-                            if reader.is_encrypted:
-                                pdf_password = global_args.pdf_decrypt_password
-                                if not pdf_password:
-                                    # PDF is encrypted but no password provided
-                                    error_files = [
-                                        {
-                                            "file_path": str(file_path.name),
-                                            "error_description": "[File Extraction]PDF is encrypted but no password provided",
-                                            "original_error": "Please set PDF_DECRYPT_PASSWORD environment variable to decrypt this PDF file",
-                                            "file_size": file_size,
-                                        }
-                                    ]
-                                    await rag.apipeline_enqueue_error_documents(
-                                        error_files, track_id
-                                    )
-                                    logger.error(
-                                        f"[File Extraction]PDF is encrypted but no password provided: {file_path.name}"
-                                    )
-                                    return False, track_id
-
-                                # Try to decrypt with password
-                                try:
-                                    decrypt_result = reader.decrypt(pdf_password)
-                                    if decrypt_result == 0:
-                                        # Password is incorrect
-                                        error_files = [
-                                            {
-                                                "file_path": str(file_path.name),
-                                                "error_description": "[File Extraction]Failed to decrypt PDF - incorrect password",
-                                                "original_error": "The provided PDF_DECRYPT_PASSWORD is incorrect for this file",
-                                                "file_size": file_size,
-                                            }
-                                        ]
-                                        await rag.apipeline_enqueue_error_documents(
-                                            error_files, track_id
-                                        )
-                                        logger.error(
-                                            f"[File Extraction]Incorrect PDF password: {file_path.name}"
-                                        )
-                                        return False, track_id
-                                except Exception as decrypt_error:
-                                    # Decryption process error
-                                    error_files = [
-                                        {
-                                            "file_path": str(file_path.name),
-                                            "error_description": "[File Extraction]PDF decryption failed",
-                                            "original_error": f"Error during PDF decryption: {str(decrypt_error)}",
-                                            "file_size": file_size,
-                                        }
-                                    ]
-                                    await rag.apipeline_enqueue_error_documents(
-                                        error_files, track_id
-                                    )
-                                    logger.error(
-                                        f"[File Extraction]PDF decryption error for {file_path.name}: {str(decrypt_error)}"
-                                    )
-                                    return False, track_id
-
-                            # Extract text from PDF (encrypted PDFs are now decrypted, unencrypted PDFs proceed directly)
-                            for page in reader.pages:
-                                content += page.extract_text() + "\n"
+                            if (
+                                global_args.document_loading_engine == "DOCLING"
+                                and not _is_docling_available()
+                            ):
+                                logger.warning(
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to pypdf."
+                                )
+                            # Use pypdf (non-blocking via to_thread)
+                            content = await asyncio.to_thread(
+                                _extract_pdf_pypdf,
+                                file,
+                                global_args.pdf_decrypt_password,
+                            )
                     except Exception as e:
                         error_files = [
                             {
@@ -1172,28 +1402,24 @@ async def pipeline_enqueue_file(
 
                 case ".docx":
                     try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
-                        else:
-                            if not pm.is_installed("python-docx"):  # type: ignore
-                                try:
-                                    pm.install("python-docx")
-                                except Exception:
-                                    pm.install("docx")
-                            from docx import Document  # type: ignore
-                            from io import BytesIO
-
-                            docx_file = BytesIO(file)
-                            doc = Document(docx_file)
-                            content = "\n".join(
-                                [paragraph.text for paragraph in doc.paragraphs]
+                        # Try DOCLING first if configured and available
+                        if (
+                            global_args.document_loading_engine == "DOCLING"
+                            and _is_docling_available()
+                        ):
+                            content = await asyncio.to_thread(
+                                _convert_with_docling, file_path
                             )
+                        else:
+                            if (
+                                global_args.document_loading_engine == "DOCLING"
+                                and not _is_docling_available()
+                            ):
+                                logger.warning(
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-docx."
+                                )
+                            # Use python-docx (non-blocking via to_thread)
+                            content = await asyncio.to_thread(_extract_docx, file)
                     except Exception as e:
                         error_files = [
                             {
@@ -1213,26 +1439,24 @@ async def pipeline_enqueue_file(
 
                 case ".pptx":
                     try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
+                        # Try DOCLING first if configured and available
+                        if (
+                            global_args.document_loading_engine == "DOCLING"
+                            and _is_docling_available()
+                        ):
+                            content = await asyncio.to_thread(
+                                _convert_with_docling, file_path
+                            )
                         else:
-                            if not pm.is_installed("python-pptx"):  # type: ignore
-                                pm.install("pptx")
-                            from pptx import Presentation  # type: ignore
-                            from io import BytesIO
-
-                            pptx_file = BytesIO(file)
-                            prs = Presentation(pptx_file)
-                            for slide in prs.slides:
-                                for shape in slide.shapes:
-                                    if hasattr(shape, "text"):
-                                        content += shape.text + "\n"
+                            if (
+                                global_args.document_loading_engine == "DOCLING"
+                                and not _is_docling_available()
+                            ):
+                                logger.warning(
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to python-pptx."
+                                )
+                            # Use python-pptx (non-blocking via to_thread)
+                            content = await asyncio.to_thread(_extract_pptx, file)
                     except Exception as e:
                         error_files = [
                             {
@@ -1252,33 +1476,24 @@ async def pipeline_enqueue_file(
 
                 case ".xlsx":
                     try:
-                        if global_args.document_loading_engine == "DOCLING":
-                            if not pm.is_installed("docling"):  # type: ignore
-                                pm.install("docling")
-                            from docling.document_converter import DocumentConverter  # type: ignore
-
-                            converter = DocumentConverter()
-                            result = converter.convert(file_path)
-                            content = result.document.export_to_markdown()
+                        # Try DOCLING first if configured and available
+                        if (
+                            global_args.document_loading_engine == "DOCLING"
+                            and _is_docling_available()
+                        ):
+                            content = await asyncio.to_thread(
+                                _convert_with_docling, file_path
+                            )
                         else:
-                            if not pm.is_installed("openpyxl"):  # type: ignore
-                                pm.install("openpyxl")
-                            from openpyxl import load_workbook  # type: ignore
-                            from io import BytesIO
-
-                            xlsx_file = BytesIO(file)
-                            wb = load_workbook(xlsx_file)
-                            for sheet in wb:
-                                content += f"Sheet: {sheet.title}\n"
-                                for row in sheet.iter_rows(values_only=True):
-                                    content += (
-                                        "\t".join(
-                                            str(cell) if cell is not None else ""
-                                            for cell in row
-                                        )
-                                        + "\n"
-                                    )
-                                content += "\n"
+                            if (
+                                global_args.document_loading_engine == "DOCLING"
+                                and not _is_docling_available()
+                            ):
+                                logger.warning(
+                                    f"DOCLING engine configured but not available for {file_path.name}. Falling back to openpyxl."
+                                )
+                            # Use openpyxl (non-blocking via to_thread)
+                            content = await asyncio.to_thread(_extract_xlsx, file)
                     except Exception as e:
                         error_files = [
                             {
@@ -1581,11 +1796,15 @@ async def background_delete_documents(
     """Background task to delete multiple documents"""
     from lightrag.kg.shared_storage import (
         get_namespace_data,
-        get_pipeline_status_lock,
+        get_namespace_lock,
     )
 
-    pipeline_status = await get_namespace_data("pipeline_status")
-    pipeline_status_lock = get_pipeline_status_lock()
+    pipeline_status = await get_namespace_data(
+        "pipeline_status", workspace=rag.workspace
+    )
+    pipeline_status_lock = get_namespace_lock(
+        "pipeline_status", workspace=rag.workspace
+    )
 
     total_docs = len(doc_ids)
     successful_deletions = []
@@ -1601,6 +1820,7 @@ async def background_delete_documents(
         pipeline_status.update(
             {
                 "busy": True,
+                # Job name can not be changed, it's verified in adelete_by_doc_id()
                 "job_name": f"Deleting {total_docs} Documents",
                 "job_start": datetime.now().isoformat(),
                 "docs": total_docs,
@@ -1884,12 +2104,14 @@ def create_document_routes(
             # Check if filename already exists in doc_status storage
             existing_doc_data = await rag.doc_status.get_doc_by_file_path(safe_filename)
             if existing_doc_data:
-                # Get document status information for error message
+                # Get document status and track_id from existing document
                 status = existing_doc_data.get("status", "unknown")
+                # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
+                existing_track_id = existing_doc_data.get("track_id") or ""
                 return InsertResponse(
                     status="duplicated",
                     message=f"File '{safe_filename}' already exists in document storage (Status: {status}).",
-                    track_id="",
+                    track_id=existing_track_id,
                 )
 
             file_path = doc_manager.input_dir / safe_filename
@@ -1953,13 +2175,29 @@ def create_document_routes(
                     request.file_source
                 )
                 if existing_doc_data:
-                    # Get document status information for error message
+                    # Get document status and track_id from existing document
                     status = existing_doc_data.get("status", "unknown")
+                    # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
+                    existing_track_id = existing_doc_data.get("track_id") or ""
                     return InsertResponse(
                         status="duplicated",
                         message=f"File source '{request.file_source}' already exists in document storage (Status: {status}).",
-                        track_id="",
+                        track_id=existing_track_id,
                     )
+
+            # Check if content already exists by computing content hash (doc_id)
+            sanitized_text = sanitize_text_for_encoding(request.text)
+            content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
+            existing_doc = await rag.doc_status.get_by_id(content_doc_id)
+            if existing_doc:
+                # Content already exists, return duplicated with existing track_id
+                status = existing_doc.get("status", "unknown")
+                existing_track_id = existing_doc.get("track_id") or ""
+                return InsertResponse(
+                    status="duplicated",
+                    message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                    track_id=existing_track_id,
+                )
 
             # Generate track_id for text insertion
             track_id = generate_track_id("insert")
@@ -2019,13 +2257,30 @@ def create_document_routes(
                             file_source
                         )
                         if existing_doc_data:
-                            # Get document status information for error message
+                            # Get document status and track_id from existing document
                             status = existing_doc_data.get("status", "unknown")
+                            # Use `or ""` to handle both missing key and None value (e.g., legacy rows without track_id)
+                            existing_track_id = existing_doc_data.get("track_id") or ""
                             return InsertResponse(
                                 status="duplicated",
                                 message=f"File source '{file_source}' already exists in document storage (Status: {status}).",
-                                track_id="",
+                                track_id=existing_track_id,
                             )
+
+            # Check if any content already exists by computing content hash (doc_id)
+            for text in request.texts:
+                sanitized_text = sanitize_text_for_encoding(text)
+                content_doc_id = compute_mdhash_id(sanitized_text, prefix="doc-")
+                existing_doc = await rag.doc_status.get_by_id(content_doc_id)
+                if existing_doc:
+                    # Content already exists, return duplicated with existing track_id
+                    status = existing_doc.get("status", "unknown")
+                    existing_track_id = existing_doc.get("track_id") or ""
+                    return InsertResponse(
+                        status="duplicated",
+                        message=f"Identical content already exists in document storage (doc_id: {content_doc_id}, Status: {status}).",
+                        track_id=existing_track_id,
+                    )
 
             # Generate track_id for texts insertion
             track_id = generate_track_id("insert")
@@ -2074,12 +2329,16 @@ def create_document_routes(
         """
         from lightrag.kg.shared_storage import (
             get_namespace_data,
-            get_pipeline_status_lock,
+            get_namespace_lock,
         )
 
         # Get pipeline status and lock
-        pipeline_status = await get_namespace_data("pipeline_status")
-        pipeline_status_lock = get_pipeline_status_lock()
+        pipeline_status = await get_namespace_data(
+            "pipeline_status", workspace=rag.workspace
+        )
+        pipeline_status_lock = get_namespace_lock(
+            "pipeline_status", workspace=rag.workspace
+        )
 
         # Check and set status with lock
         async with pipeline_status_lock:
@@ -2270,13 +2529,19 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
+                get_namespace_lock,
                 get_all_update_flags_status,
             )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             # Get update flags status for all namespaces
-            update_status = await get_all_update_flags_status()
+            update_status = await get_all_update_flags_status(workspace=rag.workspace)
 
             # Convert MutableBoolean objects to regular boolean values
             processed_update_status = {}
@@ -2290,8 +2555,9 @@ def create_document_routes(
                         processed_flags.append(bool(flag))
                 processed_update_status[namespace] = processed_flags
 
-            # Convert to regular dict if it's a Manager.dict
-            status_dict = dict(pipeline_status)
+            async with pipeline_status_lock:
+                # Convert to regular dict if it's a Manager.dict
+                status_dict = dict(pipeline_status)
 
             # Add processed update_status to the status dictionary
             status_dict["update_status"] = processed_update_status
@@ -2478,17 +2744,26 @@ def create_document_routes(
         doc_ids = delete_request.doc_ids
 
         try:
-            from lightrag.kg.shared_storage import get_namespace_data
+            from lightrag.kg.shared_storage import (
+                get_namespace_data,
+                get_namespace_lock,
+            )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
-            # Check if pipeline is busy
-            if pipeline_status.get("busy", False):
-                return DeleteDocByIdResponse(
-                    status="busy",
-                    message="Cannot delete documents while pipeline is busy",
-                    doc_id=", ".join(doc_ids),
-                )
+            # Check if pipeline is busy with proper lock
+            async with pipeline_status_lock:
+                if pipeline_status.get("busy", False):
+                    return DeleteDocByIdResponse(
+                        status="busy",
+                        message="Cannot delete documents while pipeline is busy",
+                        doc_id=", ".join(doc_ids),
+                    )
 
             # Add deletion task to background tasks
             background_tasks.add_task(
@@ -2825,29 +3100,27 @@ def create_document_routes(
         This is useful for recovering from server crashes, network errors, LLM service
         outages, or other temporary failures that caused document processing to fail.
 
-        The processing happens in the background and can be monitored using the
-        returned track_id or by checking the pipeline status.
+        The processing happens in the background and can be monitored by checking the
+        pipeline status. The reprocessed documents retain their original track_id from
+        initial upload, so use their original track_id to monitor progress.
 
         Returns:
-            ReprocessResponse: Response with status, message, and track_id
+            ReprocessResponse: Response with status and message.
+                track_id is always empty string because reprocessed documents retain
+                their original track_id from initial upload.
 
         Raises:
             HTTPException: If an error occurs while initiating reprocessing (500).
         """
         try:
-            # Generate track_id with "retry" prefix for retry operation
-            track_id = generate_track_id("retry")
-
             # Start the reprocessing in the background
+            # Note: Reprocessed documents retain their original track_id from initial upload
             background_tasks.add_task(rag.apipeline_process_enqueue_documents)
-            logger.info(
-                f"Reprocessing of failed documents initiated with track_id: {track_id}"
-            )
+            logger.info("Reprocessing of failed documents initiated")
 
             return ReprocessResponse(
                 status="reprocessing_started",
-                message="Reprocessing of failed documents has been initiated in background",
-                track_id=track_id,
+                message="Reprocessing of failed documents has been initiated in background. Documents retain their original track_id.",
             )
 
         except Exception as e:
@@ -2884,11 +3157,15 @@ def create_document_routes(
         try:
             from lightrag.kg.shared_storage import (
                 get_namespace_data,
-                get_pipeline_status_lock,
+                get_namespace_lock,
             )
 
-            pipeline_status = await get_namespace_data("pipeline_status")
-            pipeline_status_lock = get_pipeline_status_lock()
+            pipeline_status = await get_namespace_data(
+                "pipeline_status", workspace=rag.workspace
+            )
+            pipeline_status_lock = get_namespace_lock(
+                "pipeline_status", workspace=rag.workspace
+            )
 
             async with pipeline_status_lock:
                 if not pipeline_status.get("busy", False):

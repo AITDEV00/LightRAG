@@ -1,0 +1,14 @@
+Quantum computing represents a paradigm shift in computational power. Unlike classical computers that use bits (0s and 1s), quantum computers use quantum bits or qubits, which can exist in multiple states simultaneously through superposition.
+
+Key concepts in quantum computing:
+- Superposition: Qubits can be 0, 1, or both at once
+- Entanglement: Quantum particles can be correlated across distances
+- Quantum interference: Manipulating probability amplitudes for computation
+
+Applications include:
+- Drug discovery and molecular simulation
+- Cryptography and secure communications
+- Optimization problems in logistics and finance
+- Machine learning acceleration
+
+Companies like IBM, Google, and Microsoft are racing to achieve quantum advantage, where quantum computers can solve problems beyond classical capabilities.

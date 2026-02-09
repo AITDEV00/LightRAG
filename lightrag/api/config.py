@@ -8,6 +8,7 @@ import logging
 from dotenv import load_dotenv
 from lightrag.utils import get_env_value
 from lightrag.llm.binding_options import (
+    GeminiEmbeddingOptions,
     GeminiLLMOptions,
     OllamaEmbeddingOptions,
     OllamaLLMOptions,
@@ -238,7 +239,15 @@ def parse_args() -> argparse.Namespace:
         "--embedding-binding",
         type=str,
         default=get_env_value("EMBEDDING_BINDING", "ollama"),
-        choices=["lollms", "ollama", "openai", "azure_openai", "aws_bedrock", "jina"],
+        choices=[
+            "lollms",
+            "ollama",
+            "openai",
+            "azure_openai",
+            "aws_bedrock",
+            "jina",
+            "gemini",
+        ],
         help="Embedding binding type (default: from env or ollama)",
     )
     parser.add_argument(
@@ -249,52 +258,59 @@ def parse_args() -> argparse.Namespace:
         help=f"Rerank binding type (default: from env or {DEFAULT_RERANK_BINDING})",
     )
 
-    # Conditionally add binding options defined in binding_options module
-    # This will add command line arguments for all binding options (e.g., --ollama-embedding-num_ctx)
-    # and corresponding environment variables (e.g., OLLAMA_EMBEDDING_NUM_CTX)
+    # Document loading engine configuration
+    parser.add_argument(
+        "--docling",
+        action="store_true",
+        default=False,
+        help="Enable DOCLING document loading engine (default: from env or DEFAULT)",
+    )
+
+    # Conditionally add binding-specific options (Ollama, OpenAI, Azure OpenAI, Gemini)
+    # This registers command line arguments (e.g., --openai-llm-temperature)
+    # and reads corresponding environment variables (e.g., OPENAI_LLM_TEMPERATURE)
+
+    # Determine LLM binding value consistently from command line or environment
+    llm_binding_value = None
     if "--llm-binding" in sys.argv:
         try:
             idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "ollama":
-                OllamaLLMOptions.add_args(parser)
+            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+                llm_binding_value = sys.argv[idx + 1]
         except IndexError:
             pass
-    elif os.environ.get("LLM_BINDING") == "ollama":
-        OllamaLLMOptions.add_args(parser)
 
+    # Fall back to environment variable using same function as argparse default
+    if llm_binding_value is None:
+        llm_binding_value = get_env_value("LLM_BINDING", "ollama")
+
+    # Add LLM binding options based on determined value
+    if llm_binding_value == "ollama":
+        OllamaLLMOptions.add_args(parser)
+    elif llm_binding_value in ["openai", "azure_openai"]:
+        OpenAILLMOptions.add_args(parser)
+    elif llm_binding_value == "gemini":
+        GeminiLLMOptions.add_args(parser)
+
+    # Determine embedding binding value consistently from command line or environment
+    embedding_binding_value = None
     if "--embedding-binding" in sys.argv:
         try:
             idx = sys.argv.index("--embedding-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "ollama":
-                OllamaEmbeddingOptions.add_args(parser)
+            if idx + 1 < len(sys.argv) and not sys.argv[idx + 1].startswith("-"):
+                embedding_binding_value = sys.argv[idx + 1]
         except IndexError:
             pass
-    elif os.environ.get("EMBEDDING_BINDING") == "ollama":
+
+    # Fall back to environment variable using same function as argparse default
+    if embedding_binding_value is None:
+        embedding_binding_value = get_env_value("EMBEDDING_BINDING", "ollama")
+
+    # Add embedding binding options based on determined value
+    if embedding_binding_value == "ollama":
         OllamaEmbeddingOptions.add_args(parser)
-
-    # Add OpenAI LLM options when llm-binding is openai or azure_openai
-    if "--llm-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] in [
-                "openai",
-                "azure_openai",
-            ]:
-                OpenAILLMOptions.add_args(parser)
-        except IndexError:
-            pass
-    elif os.environ.get("LLM_BINDING") in ["openai", "azure_openai"]:
-        OpenAILLMOptions.add_args(parser)
-
-    if "--llm-binding" in sys.argv:
-        try:
-            idx = sys.argv.index("--llm-binding")
-            if idx + 1 < len(sys.argv) and sys.argv[idx + 1] == "gemini":
-                GeminiLLMOptions.add_args(parser)
-        except IndexError:
-            pass
-    elif os.environ.get("LLM_BINDING") == "gemini":
-        GeminiLLMOptions.add_args(parser)
+    elif embedding_binding_value == "gemini":
+        GeminiEmbeddingOptions.add_args(parser)
 
     args = parser.parse_args()
 
@@ -341,8 +357,13 @@ def parse_args() -> argparse.Namespace:
 
     # Inject model configuration
     args.llm_model = get_env_value("LLM_MODEL", "mistral-nemo:latest")
-    args.embedding_model = get_env_value("EMBEDDING_MODEL", "bge-m3:latest")
-    args.embedding_dim = get_env_value("EMBEDDING_DIM", 1024, int)
+    # EMBEDDING_MODEL defaults to None - each binding will use its own default model
+    # e.g., OpenAI uses "text-embedding-3-small", Jina uses "jina-embeddings-v4"
+    args.embedding_model = get_env_value("EMBEDDING_MODEL", None, special_none=True)
+    # EMBEDDING_DIM defaults to None - each binding will use its own default dimension
+    # Value is inherited from provider defaults via wrap_embedding_func_with_attrs decorator
+    args.embedding_dim = get_env_value("EMBEDDING_DIM", None, int, special_none=True)
+    args.embedding_send_dim = get_env_value("EMBEDDING_SEND_DIM", False, bool)
 
     # Inject chunk configuration
     args.chunk_size = get_env_value("CHUNK_SIZE", 1200, int)
@@ -354,8 +375,13 @@ def parse_args() -> argparse.Namespace:
     )
     args.enable_llm_cache = get_env_value("ENABLE_LLM_CACHE", True, bool)
 
-    # Select Document loading tool (DOCLING, DEFAULT)
-    args.document_loading_engine = get_env_value("DOCUMENT_LOADING_ENGINE", "DEFAULT")
+    # Set document_loading_engine from --docling flag
+    if args.docling:
+        args.document_loading_engine = "DOCLING"
+    else:
+        args.document_loading_engine = get_env_value(
+            "DOCUMENT_LOADING_ENGINE", "DEFAULT"
+        )
 
     # PDF decryption password
     args.pdf_decrypt_password = get_env_value("PDF_DECRYPT_PASSWORD", None)
@@ -369,9 +395,13 @@ def parse_args() -> argparse.Namespace:
     # For JWT Auth
     args.auth_accounts = get_env_value("AUTH_ACCOUNTS", "")
     args.token_secret = get_env_value("TOKEN_SECRET", "lightrag-jwt-default-secret")
-    args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, int)
-    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, int)
+    args.token_expire_hours = get_env_value("TOKEN_EXPIRE_HOURS", 48, float)
+    args.guest_token_expire_hours = get_env_value("GUEST_TOKEN_EXPIRE_HOURS", 24, float)
     args.jwt_algorithm = get_env_value("JWT_ALGORITHM", "HS256")
+
+    # Token auto-renewal configuration (sliding window expiration)
+    args.token_auto_renew = get_env_value("TOKEN_AUTO_RENEW", True, bool)
+    args.token_renew_threshold = get_env_value("TOKEN_RENEW_THRESHOLD", 0.5, float)
 
     # Rerank model configuration
     args.rerank_model = get_env_value("RERANK_MODEL", None)
@@ -418,6 +448,11 @@ def parse_args() -> argparse.Namespace:
         "EMBEDDING_BATCH_NUM", DEFAULT_EMBEDDING_BATCH_NUM, int
     )
 
+    # Embedding token limit configuration
+    args.embedding_token_limit = get_env_value(
+        "EMBEDDING_TOKEN_LIMIT", None, int, special_none=True
+    )
+
     ollama_server_infos.LIGHTRAG_NAME = args.simulated_model_name
     ollama_server_infos.LIGHTRAG_TAG = args.simulated_model_tag
 
@@ -435,4 +470,108 @@ def update_uvicorn_mode_config():
         )
 
 
-global_args = parse_args()
+# Global configuration with lazy initialization
+_global_args = None
+_initialized = False
+
+
+def initialize_config(args=None, force=False):
+    """Initialize global configuration
+
+    This function allows explicit initialization of the configuration,
+    which is useful for programmatic usage, testing, or embedding LightRAG
+    in other applications.
+
+    Args:
+        args: Pre-parsed argparse.Namespace or None to parse from sys.argv
+        force: Force re-initialization even if already initialized
+
+    Returns:
+        argparse.Namespace: The configured arguments
+
+    Example:
+        # Use parsed command line arguments (default)
+        initialize_config()
+
+        # Use custom configuration programmatically
+        custom_args = argparse.Namespace(
+            host='localhost',
+            port=8080,
+            working_dir='./custom_rag',
+            # ... other config
+        )
+        initialize_config(custom_args)
+    """
+    global _global_args, _initialized
+
+    if _initialized and not force:
+        return _global_args
+
+    _global_args = args if args is not None else parse_args()
+    _initialized = True
+    return _global_args
+
+
+def get_config():
+    """Get global configuration, auto-initializing if needed
+
+    Returns:
+        argparse.Namespace: The configured arguments
+    """
+    if not _initialized:
+        initialize_config()
+    return _global_args
+
+
+class _GlobalArgsProxy:
+    """Proxy object that auto-initializes configuration on first access
+
+    This maintains backward compatibility with existing code while
+    allowing programmatic control over initialization timing.
+
+    The proxy fully delegates to the underlying argparse.Namespace,
+    including support for vars() calls which is used by binding_options
+    to extract provider-specific configuration options.
+    """
+
+    def __getattribute__(self, name):
+        """Override attribute access to support vars() and regular attribute access.
+
+        This method intercepts __dict__ access (used by vars()) and delegates
+        to the underlying _global_args namespace, ensuring binding options
+        can be properly extracted.
+        """
+        global _initialized, _global_args
+
+        # Handle __dict__ access for vars() support
+        if name == "__dict__":
+            if not _initialized:
+                initialize_config()
+            return vars(_global_args)
+
+        # Handle class-level attributes that should come from the proxy itself
+        if name in ("__class__", "__repr__", "__getattribute__", "__setattr__"):
+            return object.__getattribute__(self, name)
+
+        # Delegate all other attribute access to the underlying namespace
+        if not _initialized:
+            initialize_config()
+        return getattr(_global_args, name)
+
+    def __setattr__(self, name, value):
+        global _initialized, _global_args
+        if not _initialized:
+            initialize_config()
+        setattr(_global_args, name, value)
+
+    def __repr__(self):
+        global _initialized, _global_args
+        if not _initialized:
+            return "<GlobalArgsProxy: Not initialized>"
+        return repr(_global_args)
+
+
+# Create proxy instance for backward compatibility
+# Existing code like `from config import global_args` continues to work
+# The proxy will auto-initialize on first attribute access
+global_args = _GlobalArgsProxy()

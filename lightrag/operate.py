@@ -9,7 +9,10 @@ import json_repair
 from typing import Any, AsyncIterator, overload, Literal
 from collections import Counter, defaultdict
 
-from lightrag.exceptions import PipelineCancelledException
+from lightrag.exceptions import (
+    PipelineCancelledException,
+    ChunkTokenLimitExceededError,
+)
 from lightrag.utils import (
     logger,
     compute_mdhash_id,
@@ -99,8 +102,8 @@ def chunking_by_token_size(
     content: str,
     split_by_character: str | None = None,
     split_by_character_only: bool = False,
-    overlap_token_size: int = 128,
-    max_token_size: int = 1024,
+    chunk_overlap_token_size: int = 100,
+    chunk_token_size: int = 1200,
 ) -> list[dict[str, Any]]:
     tokens = tokenizer.encode(content)
     results: list[dict[str, Any]] = []
@@ -110,19 +113,30 @@ def chunking_by_token_size(
         if split_by_character_only:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
+                if len(_tokens) > chunk_token_size:
+                    logger.warning(
+                        "Chunk split_by_character exceeds token limit: len=%d limit=%d",
+                        len(_tokens),
+                        chunk_token_size,
+                    )
+                    raise ChunkTokenLimitExceededError(
+                        chunk_tokens=len(_tokens),
+                        chunk_token_limit=chunk_token_size,
+                        chunk_preview=chunk[:120],
+                    )
                 new_chunks.append((len(_tokens), chunk))
         else:
             for chunk in raw_chunks:
                 _tokens = tokenizer.encode(chunk)
-                if len(_tokens) > max_token_size:
+                if len(_tokens) > chunk_token_size:
                     for start in range(
-                        0, len(_tokens), max_token_size - overlap_token_size
+                        0, len(_tokens), chunk_token_size - chunk_overlap_token_size
                     ):
                         chunk_content = tokenizer.decode(
-                            _tokens[start : start + max_token_size]
+                            _tokens[start : start + chunk_token_size]
                         )
                         new_chunks.append(
-                            (min(max_token_size, len(_tokens) - start), chunk_content)
+                            (min(chunk_token_size, len(_tokens) - start), chunk_content)
                         )
                 else:
                     new_chunks.append((len(_tokens), chunk))
@@ -136,12 +150,12 @@ def chunking_by_token_size(
             )
     else:
         for index, start in enumerate(
-            range(0, len(tokens), max_token_size - overlap_token_size)
+            range(0, len(tokens), chunk_token_size - chunk_overlap_token_size)
         ):
-            chunk_content = tokenizer.decode(tokens[start : start + max_token_size])
+            chunk_content = tokenizer.decode(tokens[start : start + chunk_token_size])
             results.append(
                 {
-                    "tokens": min(max_token_size, len(tokens) - start),
+                    "tokens": min(chunk_token_size, len(tokens) - start),
                     "content": chunk_content.strip(),
                     "chunk_order_index": index,
                 }
@@ -346,6 +360,20 @@ async def _summarize_descriptions(
         llm_response_cache=llm_response_cache,
         cache_type="summary",
     )
+
+    # Check summary token length against embedding limit
+    embedding_token_limit = global_config.get("embedding_token_limit")
+    if embedding_token_limit is not None and summary:
+        tokenizer = global_config["tokenizer"]
+        summary_token_count = len(tokenizer.encode(summary))
+        threshold = int(embedding_token_limit)
+
+        if summary_token_count > threshold:
+            logger.warning(
+                f"Summary tokens({summary_token_count}) exceeds embedding_token_limit({embedding_token_limit}) "
+                f" for {description_type}: {description_name}"
+            )
+
     return summary
 
 
@@ -370,8 +398,8 @@ async def _handle_single_entity_extraction(
 
         # Validate entity name after all cleaning steps
         if not entity_name or not entity_name.strip():
-            logger.warning(
-                f"Entity extraction error: entity name became empty after cleaning. Original: '{record_attributes[1]}'"
+            logger.info(
+                f"Empty entity name found after sanitization. Original: '{record_attributes[1]}'"
             )
             return None
 
@@ -447,14 +475,14 @@ async def _handle_single_relationship_extraction(
 
         # Validate entity names after all cleaning steps
         if not source:
-            logger.warning(
-                f"Relationship extraction error: source entity became empty after cleaning. Original: '{record_attributes[1]}'"
+            logger.info(
+                f"Empty source entity found after sanitization. Original: '{record_attributes[1]}'"
             )
             return None
 
         if not target:
-            logger.warning(
-                f"Relationship extraction error: target entity became empty after cleaning. Original: '{record_attributes[2]}'"
+            logger.info(
+                f"Empty target entity found after sanitization. Original: '{record_attributes[2]}'"
             )
             return None
 
@@ -2805,9 +2833,11 @@ async def extract_entities(
         cache_keys_collector = []
 
         # Get initial extraction
+        # Format system prompt without input_text for each chunk (enables OpenAI prompt caching across chunks)
         entity_extraction_system_prompt = PROMPTS[
             "entity_extraction_system_prompt"
-        ].format(**{**context_base, "input_text": content})
+        ].format(**context_base)
+        # Format user prompts with input_text for each chunk
         entity_extraction_user_prompt = PROMPTS["entity_extraction_user_prompt"].format(
             **{**context_base, "input_text": content}
         )
@@ -3256,10 +3286,16 @@ async def extract_keywords_only(
     It ONLY extracts keywords (hl_keywords, ll_keywords).
     """
 
-    # 1. Handle cache if needed - add cache type for keywords
+    # 1. Build the examples
+    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
+
+    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
+
+    # 2. Handle cache if needed - add cache type for keywords
     args_hash = compute_args_hash(
         param.mode,
         text,
+        language,
     )
     cached_result = await handle_cache(
         hashing_kv, args_hash, text, param.mode, cache_type="keywords"
@@ -3275,11 +3311,6 @@ async def extract_keywords_only(
             logger.warning(
                 "Invalid cache format for keywords, proceeding with extraction"
             )
-
-    # 2. Build the examples
-    examples = "\n".join(PROMPTS["keywords_extraction_examples"])
-
-    language = global_config["addon_params"].get("language", DEFAULT_SUMMARY_LANGUAGE)
 
     # 3. Build the keyword-extraction prompt
     kw_prompt = PROMPTS["keywords_extraction"].format(
@@ -3445,10 +3476,10 @@ async def _perform_kg_search(
     )
     query_embedding = None
     if query and (kg_chunk_pick_method == "VECTOR" or chunks_vdb):
-        embedding_func_config = text_chunks_db.embedding_func
-        if embedding_func_config and embedding_func_config.func:
+        actual_embedding_func = text_chunks_db.embedding_func
+        if actual_embedding_func:
             try:
-                query_embedding = await embedding_func_config.func([query])
+                query_embedding = await actual_embedding_func([query])
                 query_embedding = query_embedding[
                     0
                 ]  # Extract first embedding from batch result
@@ -4903,25 +4934,21 @@ async def _find_related_text_unit_from_entities(
         num_of_chunks = int(max_related_chunks * len(entities_with_chunks) / 2)
 
         # Get embedding function from global config
-        embedding_func_config = text_chunks_db.embedding_func
-        if not embedding_func_config:
+        actual_embedding_func = text_chunks_db.embedding_func
+        if not actual_embedding_func:
             logger.warning("No embedding function found, falling back to WEIGHT method")
             kg_chunk_pick_method = "WEIGHT"
         else:
             try:
-                actual_embedding_func = embedding_func_config.func
-
-                selected_chunk_ids = None
-                if actual_embedding_func:
-                    selected_chunk_ids = await pick_by_vector_similarity(
-                        query=query,
-                        text_chunks_storage=text_chunks_db,
-                        chunks_vdb=chunks_vdb,
-                        num_of_chunks=num_of_chunks,
-                        entity_info=entities_with_chunks,
-                        embedding_func=actual_embedding_func,
-                        query_embedding=query_embedding,
-                    )
+                selected_chunk_ids = await pick_by_vector_similarity(
+                    query=query,
+                    text_chunks_storage=text_chunks_db,
+                    chunks_vdb=chunks_vdb,
+                    num_of_chunks=num_of_chunks,
+                    entity_info=entities_with_chunks,
+                    embedding_func=actual_embedding_func,
+                    query_embedding=query_embedding,
+                )
 
                 if selected_chunk_ids == []:
                     kg_chunk_pick_method = "WEIGHT"
@@ -5196,24 +5223,21 @@ async def _find_related_text_unit_from_relations(
         num_of_chunks = int(max_related_chunks * len(relations_with_chunks) / 2)
 
         # Get embedding function from global config
-        embedding_func_config = text_chunks_db.embedding_func
-        if not embedding_func_config:
+        actual_embedding_func = text_chunks_db.embedding_func
+        if not actual_embedding_func:
             logger.warning("No embedding function found, falling back to WEIGHT method")
             kg_chunk_pick_method = "WEIGHT"
         else:
             try:
-                actual_embedding_func = embedding_func_config.func
-
-                if actual_embedding_func:
-                    selected_chunk_ids = await pick_by_vector_similarity(
-                        query=query,
-                        text_chunks_storage=text_chunks_db,
-                        chunks_vdb=chunks_vdb,
-                        num_of_chunks=num_of_chunks,
-                        entity_info=relations_with_chunks,
-                        embedding_func=actual_embedding_func,
-                        query_embedding=query_embedding,
-                    )
+                selected_chunk_ids = await pick_by_vector_similarity(
+                    query=query,
+                    text_chunks_storage=text_chunks_db,
+                    chunks_vdb=chunks_vdb,
+                    num_of_chunks=num_of_chunks,
+                    entity_info=relations_with_chunks,
+                    embedding_func=actual_embedding_func,
+                    query_embedding=query_embedding,
+                )
 
                 if selected_chunk_ids == []:
                     kg_chunk_pick_method = "WEIGHT"

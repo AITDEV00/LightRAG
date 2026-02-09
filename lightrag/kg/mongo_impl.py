@@ -19,7 +19,7 @@ from ..base import (
 from ..utils import logger, compute_mdhash_id
 from ..types import KnowledgeGraph, KnowledgeGraphNode, KnowledgeGraphEdge
 from ..constants import GRAPH_FIELD_SEP
-from ..kg.shared_storage import get_data_init_lock, get_storage_lock, get_graph_db_lock
+from ..kg.shared_storage import get_data_init_lock
 
 import pipmaster as pm
 
@@ -99,7 +99,7 @@ class MongoKVStorage(BaseKVStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -120,7 +120,7 @@ class MongoKVStorage(BaseKVStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(
                 f"[{self.workspace}] Final namespace (no workspace): '{self.namespace}'"
             )
@@ -138,11 +138,10 @@ class MongoKVStorage(BaseKVStorage):
             )
 
     async def finalize(self):
-        async with get_storage_lock():
-            if self.db is not None:
-                await ClientManager.release_client(self.db)
-                self.db = None
-                self._data = None
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
+            self._data = None
 
     async def get_by_id(self, id: str) -> dict[str, Any] | None:
         # Unified handling for flattened keys
@@ -263,23 +262,22 @@ class MongoKVStorage(BaseKVStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_storage_lock():
-            try:
-                result = await self._data.delete_many({})
-                deleted_count = result.deleted_count
+        try:
+            result = await self._data.delete_many({})
+            deleted_count = result.deleted_count
 
-                logger.info(
-                    f"[{self.workspace}] Dropped {deleted_count} documents from doc status {self._collection_name}"
-                )
-                return {
-                    "status": "success",
-                    "message": f"{deleted_count} documents dropped",
-                }
-            except PyMongoError as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping doc status {self._collection_name}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+            logger.info(
+                f"[{self.workspace}] Dropped {deleted_count} documents from doc status {self._collection_name}"
+            )
+            return {
+                "status": "success",
+                "message": f"{deleted_count} documents dropped",
+            }
+        except PyMongoError as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping doc status {self._collection_name}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
 
 
 @final
@@ -329,7 +327,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -350,7 +348,7 @@ class MongoDocStatusStorage(DocStatusStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         self._collection_name = self.final_namespace
@@ -370,11 +368,10 @@ class MongoDocStatusStorage(DocStatusStorage):
             )
 
     async def finalize(self):
-        async with get_storage_lock():
-            if self.db is not None:
-                await ClientManager.release_client(self.db)
-                self.db = None
-                self._data = None
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
+            self._data = None
 
     async def get_by_id(self, id: str) -> Union[dict[str, Any], None]:
         return await self._data.find_one({"_id": id})
@@ -484,23 +481,22 @@ class MongoDocStatusStorage(DocStatusStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_storage_lock():
-            try:
-                result = await self._data.delete_many({})
-                deleted_count = result.deleted_count
+        try:
+            result = await self._data.delete_many({})
+            deleted_count = result.deleted_count
 
-                logger.info(
-                    f"[{self.workspace}] Dropped {deleted_count} documents from doc status {self._collection_name}"
-                )
-                return {
-                    "status": "success",
-                    "message": f"{deleted_count} documents dropped",
-                }
-            except PyMongoError as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping doc status {self._collection_name}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+            logger.info(
+                f"[{self.workspace}] Dropped {deleted_count} documents from doc status {self._collection_name}"
+            )
+            return {
+                "status": "success",
+                "message": f"{deleted_count} documents dropped",
+            }
+        except PyMongoError as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping doc status {self._collection_name}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
 
     async def delete(self, ids: list[str]) -> None:
         await self._data.delete_many({"_id": {"$in": ids}})
@@ -517,7 +513,7 @@ class MongoDocStatusStorage(DocStatusStorage):
             collation_config = {"locale": "zh", "numericOrdering": True}
 
             # Use workspace-specific index names to avoid cross-workspace conflicts
-            workspace_prefix = f"{self.workspace}_" if self.workspace != "_" else ""
+            workspace_prefix = f"{self.workspace}_" if self.workspace != "" else ""
 
             # 1. Define all indexes needed with workspace-specific names
             all_indexes = [
@@ -754,7 +750,7 @@ class MongoGraphStorage(BaseGraphStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -775,7 +771,7 @@ class MongoGraphStorage(BaseGraphStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         self._collection_name = self.final_namespace
@@ -801,12 +797,11 @@ class MongoGraphStorage(BaseGraphStorage):
             )
 
     async def finalize(self):
-        async with get_graph_db_lock():
-            if self.db is not None:
-                await ClientManager.release_client(self.db)
-                self.db = None
-                self.collection = None
-                self.edge_collection = None
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
+            self.collection = None
+            self.edge_collection = None
 
     # Sample entity document
     # "source_ids" is Array representation of "source_id" split by GRAPH_FIELD_SEP
@@ -2015,30 +2010,29 @@ class MongoGraphStorage(BaseGraphStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_graph_db_lock():
-            try:
-                result = await self.collection.delete_many({})
-                deleted_count = result.deleted_count
+        try:
+            result = await self.collection.delete_many({})
+            deleted_count = result.deleted_count
 
-                logger.info(
-                    f"[{self.workspace}] Dropped {deleted_count} documents from graph {self._collection_name}"
-                )
+            logger.info(
+                f"[{self.workspace}] Dropped {deleted_count} documents from graph {self._collection_name}"
+            )
 
-                result = await self.edge_collection.delete_many({})
-                edge_count = result.deleted_count
-                logger.info(
-                    f"[{self.workspace}] Dropped {edge_count} edges from graph {self._edge_collection_name}"
-                )
+            result = await self.edge_collection.delete_many({})
+            edge_count = result.deleted_count
+            logger.info(
+                f"[{self.workspace}] Dropped {edge_count} edges from graph {self._edge_collection_name}"
+            )
 
-                return {
-                    "status": "success",
-                    "message": f"{deleted_count} documents and {edge_count} edges dropped",
-                }
-            except PyMongoError as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping graph {self._collection_name}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+            return {
+                "status": "success",
+                "message": f"{deleted_count} documents and {edge_count} edges dropped",
+            }
+        except PyMongoError as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping graph {self._collection_name}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
 
 
 @final
@@ -2061,6 +2055,8 @@ class MongoVectorDBStorage(BaseVectorStorage):
         self.__post_init__()
 
     def __post_init__(self):
+        self._validate_embedding_func()
+
         # Check for MONGODB_WORKSPACE environment variable first (higher priority)
         # This allows administrators to force a specific workspace for all MongoDB storage instances
         mongodb_workspace = os.environ.get("MONGODB_WORKSPACE")
@@ -2068,7 +2064,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
             # Use environment variable value, overriding the passed workspace parameter
             effective_workspace = mongodb_workspace.strip()
             logger.info(
-                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding passed workspace: '{self.workspace}')"
+                f"Using MONGODB_WORKSPACE environment variable: '{effective_workspace}' (overriding '{self.workspace}/{self.namespace}')"
             )
         else:
             # Use the workspace parameter passed during initialization
@@ -2089,7 +2085,7 @@ class MongoVectorDBStorage(BaseVectorStorage):
         else:
             # When workspace is empty, final_namespace equals original namespace
             self.final_namespace = self.namespace
-            self.workspace = "_"
+            self.workspace = ""
             logger.debug(f"Final namespace (no workspace): '{self.final_namespace}'")
 
         # Set index name based on workspace for backward compatibility
@@ -2125,11 +2121,10 @@ class MongoVectorDBStorage(BaseVectorStorage):
             )
 
     async def finalize(self):
-        async with get_storage_lock():
-            if self.db is not None:
-                await ClientManager.release_client(self.db)
-                self.db = None
-                self._data = None
+        if self.db is not None:
+            await ClientManager.release_client(self.db)
+            self.db = None
+            self._data = None
 
     async def create_vector_index_if_not_exists(self):
         """Creates an Atlas Vector Search index."""
@@ -2138,8 +2133,32 @@ class MongoVectorDBStorage(BaseVectorStorage):
             indexes = await indexes_cursor.to_list(length=None)
             for index in indexes:
                 if index["name"] == self._index_name:
+                    # Check if the existing index has matching vector dimensions
+                    existing_dim = None
+                    definition = index.get("latestDefinition", {})
+                    fields = definition.get("fields", [])
+                    for field in fields:
+                        if (
+                            field.get("type") == "vector"
+                            and field.get("path") == "vector"
+                        ):
+                            existing_dim = field.get("numDimensions")
+                            break
+
+                    expected_dim = self.embedding_func.embedding_dim
+
+                    if existing_dim is not None and existing_dim != expected_dim:
+                        error_msg = (
+                            f"Vector dimension mismatch! Index '{self._index_name}' has "
+                            f"dimension {existing_dim}, but current embedding model expects "
+                            f"dimension {expected_dim}. Please drop the existing index or "
+                            f"use an embedding model with matching dimensions."
+                        )
+                        logger.error(f"[{self.workspace}] {error_msg}")
+                        raise ValueError(error_msg)
+
                     logger.info(
-                        f"[{self.workspace}] vector index {self._index_name} already exist"
+                        f"[{self.workspace}] vector index {self._index_name} already exists with matching dimensions ({expected_dim})"
                     )
                     return
 
@@ -2452,27 +2471,26 @@ class MongoVectorDBStorage(BaseVectorStorage):
         Returns:
             dict[str, str]: Status of the operation with keys 'status' and 'message'
         """
-        async with get_storage_lock():
-            try:
-                # Delete all documents
-                result = await self._data.delete_many({})
-                deleted_count = result.deleted_count
+        try:
+            # Delete all documents
+            result = await self._data.delete_many({})
+            deleted_count = result.deleted_count
 
-                # Recreate vector index
-                await self.create_vector_index_if_not_exists()
+            # Recreate vector index
+            await self.create_vector_index_if_not_exists()
 
-                logger.info(
-                    f"[{self.workspace}] Dropped {deleted_count} documents from vector storage {self._collection_name} and recreated vector index"
-                )
-                return {
-                    "status": "success",
-                    "message": f"{deleted_count} documents dropped and vector index recreated",
-                }
-            except PyMongoError as e:
-                logger.error(
-                    f"[{self.workspace}] Error dropping vector storage {self._collection_name}: {e}"
-                )
-                return {"status": "error", "message": str(e)}
+            logger.info(
+                f"[{self.workspace}] Dropped {deleted_count} documents from vector storage {self._collection_name} and recreated vector index"
+            )
+            return {
+                "status": "success",
+                "message": f"{deleted_count} documents dropped and vector index recreated",
+            }
+        except PyMongoError as e:
+            logger.error(
+                f"[{self.workspace}] Error dropping vector storage {self._collection_name}: {e}"
+            )
+            return {"status": "error", "message": str(e)}
 
 
 async def get_or_create_collection(db: AsyncDatabase, collection_name: str):

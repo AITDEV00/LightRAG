@@ -1,4 +1,6 @@
 from collections.abc import AsyncIterator
+import os
+import re
 
 import pipmaster as pm
 
@@ -22,8 +24,31 @@ from lightrag.exceptions import (
 from lightrag.api import __api_version__
 
 import numpy as np
-from typing import Union
-from lightrag.utils import logger
+from typing import Optional, Union
+from lightrag.utils import (
+    wrap_embedding_func_with_attrs,
+    logger,
+)
+
+
+_OLLAMA_CLOUD_HOST = "https://ollama.com"
+_CLOUD_MODEL_SUFFIX_PATTERN = re.compile(r"(?:-cloud|:cloud)$")
+
+
+def _coerce_host_for_cloud_model(host: Optional[str], model: object) -> Optional[str]:
+    if host:
+        return host
+    try:
+        model_name_str = str(model) if model is not None else ""
+    except (TypeError, ValueError, AttributeError) as e:
+        logger.warning(f"Failed to convert model to string: {e}, using empty string")
+        model_name_str = ""
+    if _CLOUD_MODEL_SUFFIX_PATTERN.search(model_name_str):
+        logger.debug(
+            f"Detected cloud model '{model_name_str}', using Ollama Cloud host"
+        )
+        return _OLLAMA_CLOUD_HOST
+    return host
 
 
 @retry(
@@ -53,12 +78,17 @@ async def _ollama_model_if_cache(
         timeout = None
     kwargs.pop("hashing_kv", None)
     api_key = kwargs.pop("api_key", None)
+    # fallback to environment variable when not provided explicitly
+    if not api_key:
+        api_key = os.getenv("OLLAMA_API_KEY")
     headers = {
         "Content-Type": "application/json",
         "User-Agent": f"LightRAG/{__api_version__}",
     }
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
+
+    host = _coerce_host_for_cloud_model(host, model)
 
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
 
@@ -142,8 +172,40 @@ async def ollama_model_complete(
     )
 
 
-async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
+@wrap_embedding_func_with_attrs(
+    embedding_dim=1024, max_token_size=8192, model_name="bge-m3:latest"
+)
+async def ollama_embed(
+    texts: list[str],
+    embed_model: str = "bge-m3:latest",
+    max_token_size: int | None = None,
+    **kwargs,
+) -> np.ndarray:
+    """Generate embeddings using Ollama's API.
+
+    Args:
+        texts: List of texts to embed.
+        embed_model: The Ollama embedding model to use. Default is "bge-m3:latest".
+        max_token_size: Maximum tokens per text. This parameter is automatically
+            injected by the EmbeddingFunc wrapper when the underlying function
+            signature supports it (via inspect.signature check). Ollama will
+            automatically truncate texts exceeding the model's context length
+            (num_ctx), so no client-side truncation is needed.
+        **kwargs: Additional arguments passed to the Ollama client.
+
+    Returns:
+        A numpy array of embeddings, one per input text.
+
+    Note:
+        - Ollama API automatically truncates texts exceeding the model's context length
+        - The max_token_size parameter is received but not used for client-side truncation
+    """
+    # Note: max_token_size is received but not used for client-side truncation.
+    # Ollama API handles truncation automatically based on the model's num_ctx setting.
+    _ = max_token_size  # Acknowledge parameter to avoid unused variable warning
     api_key = kwargs.pop("api_key", None)
+    if not api_key:
+        api_key = os.getenv("OLLAMA_API_KEY")
     headers = {
         "Content-Type": "application/json",
         "User-Agent": f"LightRAG/{__api_version__}",
@@ -153,6 +215,8 @@ async def ollama_embed(texts: list[str], embed_model, **kwargs) -> np.ndarray:
 
     host = kwargs.pop("host", None)
     timeout = kwargs.pop("timeout", None)
+
+    host = _coerce_host_for_cloud_model(host, embed_model)
 
     ollama_client = ollama.AsyncClient(host=host, timeout=timeout, headers=headers)
     try:

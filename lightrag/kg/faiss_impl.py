@@ -10,7 +10,7 @@ from lightrag.utils import logger, compute_mdhash_id
 from lightrag.base import BaseVectorStorage
 
 from .shared_storage import (
-    get_storage_lock,
+    get_namespace_lock,
     get_update_flag,
     set_all_update_flags,
 )
@@ -28,6 +28,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
     """
 
     def __post_init__(self):
+        self._validate_embedding_func()
         # Grab config values if available
         kwargs = self.global_config.get("vector_db_storage_cls_kwargs", {})
         cosine_threshold = kwargs.get("cosine_better_than_threshold")
@@ -42,13 +43,11 @@ class FaissVectorDBStorage(BaseVectorStorage):
         if self.workspace:
             # Include workspace in the file path for data isolation
             workspace_dir = os.path.join(working_dir, self.workspace)
-            self.final_namespace = f"{self.workspace}_{self.namespace}"
 
         else:
             # Default behavior when workspace is empty
-            self.final_namespace = self.namespace
-            self.workspace = "_"
             workspace_dir = working_dir
+            self.workspace = ""
 
         os.makedirs(workspace_dir, exist_ok=True)
         self._faiss_index_file = os.path.join(
@@ -73,9 +72,13 @@ class FaissVectorDBStorage(BaseVectorStorage):
     async def initialize(self):
         """Initialize storage data"""
         # Get the update flag for cross-process update notification
-        self.storage_updated = await get_update_flag(self.final_namespace)
+        self.storage_updated = await get_update_flag(
+            self.namespace, workspace=self.workspace
+        )
         # Get the storage lock for use in other methods
-        self._storage_lock = get_storage_lock()
+        self._storage_lock = get_namespace_lock(
+            self.namespace, workspace=self.workspace
+        )
 
     async def _get_index(self):
         """Check if the shtorage should be reloaded"""
@@ -356,9 +359,22 @@ class FaissVectorDBStorage(BaseVectorStorage):
             )
             return
 
+        dim_mismatch = False
         try:
             # Load the Faiss index
             self._index = faiss.read_index(self._faiss_index_file)
+
+            # Verify dimension consistency between loaded index and embedding function
+            if self._index.d != self._dim:
+                error_msg = (
+                    f"Dimension mismatch: loaded Faiss index has dimension {self._index.d}, "
+                    f"but embedding function expects dimension {self._dim}. "
+                    f"Please ensure the embedding model matches the stored index or rebuild the index."
+                )
+                logger.error(error_msg)
+                dim_mismatch = True
+                raise ValueError(error_msg)
+
             # Load metadata
             with open(self._meta_file, "r", encoding="utf-8") as f:
                 stored_dict = json.load(f)
@@ -373,6 +389,8 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 f"[{self.workspace}] Faiss index loaded with {self._index.ntotal} vectors from {self._faiss_index_file}"
             )
         except Exception as e:
+            if dim_mismatch:
+                raise
             logger.error(
                 f"[{self.workspace}] Failed to load Faiss index or metadata: {e}"
             )
@@ -400,7 +418,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 # Save data to disk
                 self._save_faiss_index()
                 # Notify other processes that data has been updated
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 # Reset own update flag to avoid self-reloading
                 self.storage_updated.value = False
             except Exception as e:
@@ -527,7 +545,7 @@ class FaissVectorDBStorage(BaseVectorStorage):
                 self._load_faiss_index()
 
                 # Notify other processes
-                await set_all_update_flags(self.final_namespace)
+                await set_all_update_flags(self.namespace, workspace=self.workspace)
                 self.storage_updated.value = False
 
                 logger.info(
