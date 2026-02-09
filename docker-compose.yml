@@ -1,10 +1,10 @@
 services:
   lightrag:
     # container_name: lightrag
-    image: adeo-icarus-lightrag:27-01-2026
-    # build:
-    #   context: .
-    #   dockerfile: Dockerfile
+    image: adeo-icarus-lightrag:09-02-2026
+    build:
+      context: .
+      dockerfile: Dockerfile
       # tags:
       #   - ghcr.io/hkuds/lightrag:latest
     # ports:

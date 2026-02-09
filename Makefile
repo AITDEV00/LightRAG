@@ -1,6 +1,6 @@
 # Default image name if not provided
 NAME := adeo-icarus-lightrag
-USERNAME := jya0
+USERNAME := faraz7704
 
 
 # Get today's date in dd-mm-yyyy format
