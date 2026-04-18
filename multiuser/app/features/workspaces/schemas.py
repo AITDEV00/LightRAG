@@ -32,3 +32,4 @@ class WorkspaceResponse(BaseModel):
     workspace: str
     port: int
     api_key: str
+    is_active: bool = False

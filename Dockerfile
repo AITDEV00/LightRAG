@@ -118,11 +118,12 @@ ENV INPUT_DIR=/app/data/inputs
 # Copy the entire multiuser directory
 COPY multiuser ./multiuser
 
-# --- NEW: Expose Manager Port ---
+# --- ASGI Multi-Tenant Dispatcher ---
+# The multiuser directory contains the ASGI dispatcher that routes
+# requests to per-workspace FastAPI apps inside a single process.
+# No subprocesses are spawned — all workspaces share one Python interpreter.
 EXPOSE 8000
 
-# --- NEW: Set Entrypoint to Manager ---
-# We use unbuffered mode to see logs immediately
 ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app/multiuser
@@ -130,4 +131,7 @@ WORKDIR /app/multiuser
 ENTRYPOINT ["python", "manager.py"]
 
 # Default arguments (can be overridden at runtime)
+# --disable-auth: Use X-Workspace header instead of X-API-Key
+# --auto-create:  Automatically create workspaces on first request
+# --root-path:    FastAPI root path for reverse proxy setups
 CMD ["--disable-auth", "--auto-create", "--root-path", "/lightrag"]

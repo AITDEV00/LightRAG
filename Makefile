@@ -1,6 +1,6 @@
 # Default image name if not provided
 NAME := adeo-icarus-lightrag
-USERNAME := faraz7704
+USERNAME := jya0
 
 
 # Get today's date in dd-mm-yyyy format
@@ -18,7 +18,7 @@ SPEC_FILE := $(DOCS_DIR)/openapi.json
 OUTPUT_HTML := $(DOCS_DIR)/lightrag-api-docs.html
 
 
-.PHONY: all docker_build docs_api docker_upload  harbor_upload
+.PHONY: all docker_build docker_run docs_api docker_upload harbor_upload
 
 all: docker_build
 
@@ -36,6 +36,14 @@ docs_api:
 docker_build:
 	@echo "Building docker image: $(IMAGE_TAG)"
 	@docker build . -t $(IMAGE_TAG)
+
+docker_run:
+	@echo "Running docker image: $(IMAGE_TAG) on port 8000"
+	@docker run --rm -p 8000:8000 \
+		-e POSTGRES_HOST=host-gateway \
+		-e POSTGRES_PASSWORD=postgres \
+		--add-host=host-gateway:host-gateway \
+		$(IMAGE_TAG)
 
 docker_upload:
 	@echo "Uploading docker image: $(IMAGE_TAG) to Docker Hub"

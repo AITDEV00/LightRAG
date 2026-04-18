@@ -42,9 +42,10 @@ POSTGRES_MAX_CONNECTIONS = int(os.getenv("POSTGRES_MAX_CONNECTIONS", "12"))
 DATA_ROOT = os.path.abspath("./data")
 LOG_ROOT = os.path.abspath("./logs")
 ADMIN_SECRET = "admin-secret-123"
-START_PORT_RANGE = 9000
+START_PORT_RANGE = 9000  # Kept for backward compatibility (port column in DB)
 STARTUP_GRACE_PERIOD = 60
 STARTUP_STAGGER = 0.1
+IDLE_TIMEOUT = int(os.getenv("IDLE_TIMEOUT", "1800"))  # seconds before evicting idle workspaces
 
 # Ensure directories exist
 os.makedirs(DATA_ROOT, exist_ok=True)
@@ -55,4 +56,4 @@ print(f"🔧 Configuration: Host={args.host}, Port={args.port}")
 print(f"🔓 Auth Disabled: {args.disable_auth}")
 print(f"✨ Auto-Create Workspaces: {args.auto_create}")
 print(f"🗄️ PostgreSQL: {POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DATABASE}")
-print(f"⏱️ Startup Stagger: {STARTUP_STAGGER}s")
+print(f"💤 Idle Timeout: {IDLE_TIMEOUT}s")

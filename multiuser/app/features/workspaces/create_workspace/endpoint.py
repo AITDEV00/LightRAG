@@ -6,7 +6,6 @@ import asyncpg
 from fastapi import APIRouter, HTTPException, Header
 
 from app.config.settings import ADMIN_SECRET
-from app.common.process_manager import manager
 from app.features.workspaces.schemas import WorkspaceCreate
 from app.features.workspaces.create_workspace.service import create_workspace
 
@@ -24,8 +23,8 @@ async def create_workspace_endpoint(
     
     try:
         config = await create_workspace(data.workspace)
-        # Start the process via manager
-        await manager.start_process(config)
+        # No need to start a process — the ASGI dispatcher will
+        # lazy-load the workspace app on its first request.
         return {"status": "created", "workspace": config.workspace, "api_key": config.api_key}
     except asyncpg.UniqueViolationError:
         raise HTTPException(400, "Workspace already exists")

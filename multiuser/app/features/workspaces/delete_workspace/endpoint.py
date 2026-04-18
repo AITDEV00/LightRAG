@@ -2,14 +2,12 @@
 Endpoint for delete workspace operation.
 DELETE /admin/workspaces/{workspace}
 """
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Request
 
 from app.config.settings import ADMIN_SECRET
-from app.common.process_manager import manager
 from app.features.workspaces.repository import get_workspace_by_name
 from app.features.workspaces.delete_workspace.repository import remove_workspace_from_db
 from app.features.workspaces.delete_workspace.service import (
-    cleanup_workspace_documents,
     wipe_workspace_data,
 )
 
@@ -19,6 +17,7 @@ router = APIRouter(tags=["admin"])
 @router.delete("/admin/workspaces/{workspace}")
 async def delete_workspace_endpoint(
     workspace: str,
+    request: Request,
     wipe_data: bool = False,
     x_admin_key: str = Header(None, alias="X-Admin-Key")
 ):
@@ -26,15 +25,16 @@ async def delete_workspace_endpoint(
     if x_admin_key != ADMIN_SECRET:
         raise HTTPException(403, "Invalid Key")
     
-    # Attempt to clear data via API if wipe_data is requested
-    if wipe_data:
-        config = await get_workspace_by_name(workspace)
-        if config:
-            await cleanup_workspace_documents(config)
+    # Get the ASGI dispatcher from app state
+    dispatcher = request.app.state.dispatcher
 
-    manager.stop_process(workspace)
+    # Evict the workspace app from memory (gracefully closes DB connections)
+    await dispatcher.evict_app(workspace)
+
+    # Remove from Postgres
     await remove_workspace_from_db(workspace)
     
+    # Optionally wipe the filesystem data
     if wipe_data:
         wipe_workspace_data(workspace)
         
