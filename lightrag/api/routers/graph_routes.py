@@ -24,7 +24,11 @@ from fastapi.responses import FileResponse
 
 # ERJobManager moved to er_routes.py
 
-router = APIRouter(tags=["graph"])
+# NOTE: Do NOT instantiate a module-level router here.
+# In multi-tenant ASGI mode, a module-level router would be shared across
+# all tenant apps, causing the first-registered handler to always win and
+# routing every workspace's requests to the same rag instance.
+# The router is created inside create_graph_routes() instead.
 
 
 class EntityUpdateRequest(BaseModel):
@@ -101,6 +105,8 @@ class RelationCreateRequest(BaseModel):
 
 
 def create_graph_routes(rag, api_key: Optional[str] = None):
+    # Create a NEW router per call so each tenant app gets its own route bindings
+    router = APIRouter(tags=["graph"])
     combined_auth = get_combined_auth_dependency(api_key)
 
     # ER cleanup moved to er_routes module

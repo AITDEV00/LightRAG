@@ -209,7 +209,7 @@ class ERJobManager:
 
 # ----------------------
 
-router = APIRouter(tags=["Deduplication"])
+# NOTE: Router is created inside create_er_routes() for multi-tenant ASGI isolation.
 
 async def _run_analysis_task(job_id: str, rag, job_manager: ERJobManager):
     pipeline_status_lock = get_pipeline_status_lock()
@@ -307,6 +307,8 @@ async def _run_analysis_task(job_id: str, rag, job_manager: ERJobManager):
 
 
 def create_er_routes(rag, api_key: Optional[str] = None):
+    # Create a NEW router per call so each tenant app gets its own route bindings
+    router = APIRouter(tags=["Deduplication"])
     combined_auth = get_combined_auth_dependency(api_key)
 
     @router.on_event("startup")

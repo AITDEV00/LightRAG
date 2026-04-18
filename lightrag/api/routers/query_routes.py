@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 from ascii_colors import trace_exception
 
 
-router = APIRouter(tags=["query"])
+# NOTE: Router is created inside create_query_routes() for multi-tenant ASGI isolation.
 
 
 class QueryRequest(BaseModel):
@@ -247,6 +247,8 @@ class StreamChunkResponse(BaseModel):
 
 
 def create_query_routes(rag, api_key: Optional[str] = None, top_k: int = 60):
+    # Create a NEW router per call so each tenant app gets its own route bindings
+    router = APIRouter(tags=["query"])
     combined_auth = get_combined_auth_dependency(api_key)
 
     def _collect_file_paths(data: Dict[str, Any]) -> List[str]:

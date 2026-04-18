@@ -1263,6 +1263,25 @@ def create_app(args):
             # Cleanup expired keyed locks and get status
             keyed_lock_info = cleanup_keyed_lock()
 
+            # DEBUG: Collect isolation information to prove multi-tenant ASGI isolation
+            isolation_debug = {
+                "rag_workspace": rag.workspace,
+                "document_manager_input_dir": str(doc_manager.input_dir),
+                "graph_storage_workspace": getattr(rag.chunk_entity_relation_graph, "workspace", None),
+                "vector_storage_workspace": getattr(rag.chunks_vdb, "workspace", None),
+                "kv_storage_workspace": getattr(rag.llm_response_cache, "workspace", None),
+            }
+            if hasattr(rag.chunk_entity_relation_graph, "_get_workspace_label"):
+                isolation_debug["neo4j_label"] = rag.chunk_entity_relation_graph._get_workspace_label()
+            
+            # Extended Storage Separation Debug (Qdrant, Redis, etc.)
+            if hasattr(rag.chunks_vdb, "final_namespace"):
+                isolation_debug["vector_db_collection"] = getattr(rag.chunks_vdb, "final_namespace")
+            if hasattr(rag.chunks_vdb, "effective_workspace"):
+                isolation_debug["vector_db_effective_workspace"] = getattr(rag.chunks_vdb, "effective_workspace")
+            if hasattr(rag.llm_response_cache, "final_namespace"):
+                isolation_debug["kv_storage_final_namespace"] = getattr(rag.llm_response_cache, "final_namespace")
+
             return {
                 "status": "healthy",
                 "webui_available": webui_assets_exist,
@@ -1285,7 +1304,7 @@ def create_app(args):
                     "vector_storage": args.vector_storage,
                     "enable_llm_cache_for_extract": args.enable_llm_cache_for_extract,
                     "enable_llm_cache": args.enable_llm_cache,
-                    "workspace": default_workspace,
+                    "workspace": args.workspace,
                     "max_graph_nodes": args.max_graph_nodes,
                     # Rerank configuration
                     "enable_rerank": rerank_model_func is not None,
@@ -1312,6 +1331,7 @@ def create_app(args):
                 "api_version": api_version_display,
                 "webui_title": webui_title,
                 "webui_description": webui_description,
+                "debug_isolation": isolation_debug,
             }
         except Exception as e:
             logger.error(f"Error getting health status: {str(e)}")

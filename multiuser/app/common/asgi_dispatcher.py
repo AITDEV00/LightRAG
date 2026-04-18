@@ -153,13 +153,21 @@ class MultiTenantASGIRouter:
 
             # Now we can safely copy global_args
             from lightrag.api.config import global_args as lightrag_global_args
-            ws_args = copy.copy(lightrag_global_args)
+            import argparse
+            
+            # The global_args is a proxy, so copy.copy() just returns the proxy. 
+            # We must extract the underlying dictionary to create a truly independent Namespace
+            ws_args = argparse.Namespace(**vars(lightrag_global_args))
             ws_args.workspace = workspace_name
 
             # Per-workspace working directory (same as old process_manager)
             work_dir = os.path.join(DATA_ROOT, workspace_name)
             os.makedirs(work_dir, exist_ok=True)
             ws_args.working_dir = work_dir
+
+            # Per-workspace input directory to prevent file upload cross-pollution
+            ws_args.input_dir = os.path.join(work_dir, "inputs")
+            os.makedirs(ws_args.input_dir, exist_ok=True)
 
             # Inject the workspace's specific API key into the child app's config
             # so it enforces auth internally and generates the correct OpenAPI spec
@@ -174,13 +182,28 @@ class MultiTenantASGIRouter:
             original_argv = sys.argv
             sys.argv = [sys.executable, "--workspace", workspace_name]
 
-            try:
-                # Create the FastAPI app using the unmodified core function
-                from lightrag.api.lightrag_server import create_app
-                app = create_app(ws_args)
+            # Temporarily override OS environment variables so that external storage providers
+            # (which check os.environ directly) route to the correct workspace and ignore global .env
+            env_vars_to_mock = {
+                "WORKSPACE": workspace_name,
+                "MILVUS_WORKSPACE": workspace_name,
+                "MONGODB_WORKSPACE": workspace_name,
+                "REDIS_WORKSPACE": workspace_name,
+                "QDRANT_WORKSPACE": workspace_name,
+                "POSTGRES_WORKSPACE": workspace_name,
+                "NEO4J_WORKSPACE": workspace_name,
+                "MEMGRAPH_WORKSPACE": workspace_name,
+            }
+            from unittest.mock import patch
 
-                # Trigger the FastAPI lifespan startup (initialises DB connections)
-                await self._startup_app(app)
+            try:
+                with patch.dict(os.environ, env_vars_to_mock):
+                    # Create the FastAPI app using the unmodified core function
+                    from lightrag.api.lightrag_server import create_app
+                    app = create_app(ws_args)
+
+                    # Trigger the FastAPI lifespan startup (initialises DB connections)
+                    await self._startup_app(app)
 
                 self.apps[workspace_name] = app
                 self.last_accessed[workspace_name] = time.time()
@@ -411,21 +434,25 @@ class MultiTenantASGIRouter:
             # Get or create the workspace app
             app = await self.get_app(workspace_name)
 
+            # Rebuild headers to inject the workspace name and optionally the child API key
+            new_headers = []
+            for k, v in scope.get("headers", []):
+                # Strip out the parent auth key and any existing workspace header to prevent spoofing
+                if k not in (b"x-api-key", b"lightrag-workspace", b"x-workspace"):
+                    new_headers.append((k, v))
+            
+            # Inject the resolved workspace name so LightRAG's get_workspace() picks it up
+            new_headers.append((b"lightrag-workspace", workspace_name.encode("utf-8")))
+
             # Inject the child API key if auth mode is enabled
             if not args.disable_auth:
                 config = await get_workspace_by_name(workspace_name)
                 if config and config.api_key:
-                    # Rebuild headers with the child's API key
-                    new_headers = [
-                        (k, v)
-                        for k, v in scope.get("headers", [])
-                        if k != b"x-api-key"
-                    ]
-                    new_headers.append(
-                        (b"x-api-key", config.api_key.encode("utf-8"))
-                    )
-                    scope = dict(scope)
-                    scope["headers"] = new_headers
+                    new_headers.append((b"x-api-key", config.api_key.encode("utf-8")))
+
+            # Update the scope with the new headers
+            scope = dict(scope)
+            scope["headers"] = new_headers
 
             # Forward directly to the child FastAPI app
             await app(scope, receive, send)

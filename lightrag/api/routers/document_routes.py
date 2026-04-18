@@ -76,10 +76,7 @@ def format_datetime(dt: Any) -> Optional[str]:
     return dt.isoformat()
 
 
-router = APIRouter(
-    prefix="/documents",
-    tags=["documents"],
-)
+# NOTE: Router is created inside create_document_routes() for multi-tenant ASGI isolation.
 
 # Temporary file prefix
 temp_prefix = "__tmp__"
@@ -2039,6 +2036,11 @@ async def background_delete_documents(
 def create_document_routes(
     rag: LightRAG, doc_manager: DocumentManager, api_key: Optional[str] = None
 ):
+    # Create a NEW router per call so each tenant app gets its own route bindings
+    router = APIRouter(
+        prefix="/documents",
+        tags=["documents"],
+    )
     # Create combined auth dependency for document routes
     combined_auth = get_combined_auth_dependency(api_key)
 
