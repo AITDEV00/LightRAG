@@ -15,3 +15,4 @@ git push origin --tags
 
 python tests/test_concurrent_upload.py --workspace jyao --url http://localhost:8000
 python tests/test_concurrent_upload.py --workspace jyao --url http://10.34.156.133:8080
+python tests/test_concurrent_upload.py --workspace jyao --url http://10.34.139.133:8080
