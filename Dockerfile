@@ -126,6 +126,10 @@ EXPOSE 8000
 
 ENV PYTHONUNBUFFERED=1
 
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y --no-install-recommends procps htop  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app/multiuser
 
 ENTRYPOINT ["python", "manager.py"]

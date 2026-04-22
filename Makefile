@@ -37,7 +37,13 @@ docker_build:
 	@echo "Building docker image: $(IMAGE_TAG)"
 	@docker build . -t $(IMAGE_TAG)
 
-docker_run:
+docker_run_stg:
+	@echo "Running docker image: $(IMAGE_TAG) on port 8000"
+	@docker run --rm -p 8000:8000 \
+		-v $(CURDIR)/multiuser/.env:/app/multiuser/.env:ro \
+		$(IMAGE_TAG)
+
+docker_run_local:
 	@echo "Running docker image: $(IMAGE_TAG) on port 8000"
 	@docker run --rm -p 8000:8000 \
 		-e POSTGRES_HOST=host-gateway \
